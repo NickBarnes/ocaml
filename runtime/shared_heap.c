@@ -1054,7 +1054,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
           /* Set first field of p to as a forwarding pointer */
           Field(Val_hp(p), 0) = Val_hp(new_p);
 
-          for( int w = 1 ; w < Whsize_hd(hd) ; w++ ) {
+          for( int w = 1 ; w < Wosize_hd(hd) ; w++ ) {
             Field(Val_hp(p), w) = 0;
           }
         }
