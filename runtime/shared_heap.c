@@ -1057,6 +1057,8 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
           for( int w = 1 ; w < Wosize_hd(hd) ; w++ ) {
             Field(Val_hp(p), w) = 0;
           }
+        } else {
+          memset(p, 0, wh * sizeof(value));
         }
 
         p += wh;
