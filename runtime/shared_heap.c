@@ -35,6 +35,8 @@
 #include "caml/startup_aux.h"
 #include "caml/weak.h"
 
+#include <unistd.h>
+
 typedef unsigned int sizeclass;
 
 /* Initial MARKED, UNMARKED, and GARBAGE values; any permutation would work */
@@ -962,7 +964,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
     }
     #endif
 
-    if( cur_pool == NULL) {
+    if( cur_pool == NULL ) {
       /* No partially filled pools for this size, nothing to do */
       continue;
     }
@@ -1129,6 +1131,88 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   compact_update_ephe_list(ephe_info->live);
 
   caml_global_barrier_end(b);
+
+  /* DEBUG phase */
+
+  if(getenv("DEBUG_COMPACT") != NULL) {
+    b = caml_global_barrier_begin();
+
+    for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
+      /* Find min and max evac */
+      uintnat min_evac = UINTNAT_MAX;
+      uintnat max_evac = 0;
+
+      pool* test_pool = heap->unswept_avail_pools[sz_class];
+      int found_evac = 0;
+
+      if( test_pool != NULL ) {
+        while( test_pool != NULL ) {
+          if( test_pool->evacuating == 1 ) {
+            found_evac = 1;
+            if( (uintnat)test_pool < min_evac ) {
+              min_evac = (uintnat)test_pool;
+            }
+
+            if( (uintnat)test_pool > max_evac ) {
+              max_evac = (uintnat)test_pool;
+            }
+          }
+
+          test_pool = test_pool->next;
+        }
+
+        if( !found_evac ) {
+          continue;
+        }
+
+        // printf("min_evac: %lx, max_evac: %lx\n", min_evac, max_evac);
+
+        {
+          FILE *maps_fp = fopen("/proc/self/maps", "r"); // open /proc/self/maps for reading
+          if (maps_fp == NULL) {
+            perror("fopen maps");
+            exit(EXIT_FAILURE);
+          }
+
+          FILE *mem_fp = fopen("/proc/self/mem", "r"); // open /proc/self/mem for reading
+          if (mem_fp == NULL) {
+            perror("fopen mem");
+            exit(EXIT_FAILURE);
+          }
+
+          char line[256]; // buffer for storing each line
+          uintnat start, end; // variables for storing start and end addresses
+
+          while (fgets(line, sizeof(line), maps_fp) != NULL) { // read each line until EOF
+            sscanf(line, "%lx-%lx", &start, &end); // scan the line for start and end addresses in hexadecimal format
+            //printf("read: %s\n", line);
+            if (strchr(line + 18, 'r') != NULL && strchr(line + 49 , '/') == NULL) { // check if the region has read permission and is not mapped from a file or device
+              //printf("start: %lx, end: %lx, min_evac: %lx, max_evac: %lx, scanning: %s\n", start, end, min_evac, max_evac, line);
+              for(uintnat i = start; i < end; i += sizeof(uintnat)) { // iterate over the region in steps of the size of a q
+                uintnat value;
+                pread(fileno(mem_fp), &value, sizeof(value), i); // read the first value in the region
+                if (value >= min_evac && value <= max_evac) {
+                  // check if value is inside one of the evacuated pools
+                  pool* test_pool = heap->unswept_full_pools[sz_class];
+
+                  while( test_pool != NULL ) {
+                    if( test_pool->evacuating == 1 ) {
+                      if( (uintnat)test_pool <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
+                        printf("Found pointer to evacuated pool at %lx in %lx-%lx", value, start, end);
+                        abort();
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    caml_global_barrier_end(b);
+  }
 
   /* Third phase: each evacuating page needs to have it's flag reset and
       be moved to the free list. Unfortunately this means a lot of
