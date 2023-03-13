@@ -1014,12 +1014,16 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
     /* Reset to the first pool to allocate in to */
     cur_pool = heap->unswept_avail_pools[sz_class];
 
+    CAMLassert( cur_pool->evacuating == 0 );
+
     /* Now we start from evac_pool and evacuate live blocks to cur_pool */
     while( evac_pool != NULL ) {
       value* p = (value*)((char*)evac_pool + POOL_HEADER_SZ);
       value* end = (value*)evac_pool + POOL_WSIZE;
       mlsize_t wh = wsize_sizeclass[sz_class];
       value *next = NULL;
+
+      CAMLassert( evac_pool->evacuating == 1 );
 
       while (p + wh <= end) {
         header_t hd = (header_t)atomic_load_relaxed((atomic_uintnat*)p);
@@ -1040,6 +1044,8 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
             heap->unswept_full_pools[sz_class] = cur_pool;
 
             cur_pool = next_pool;
+
+            CAMLassert( cur_pool->evacuating == 0 );
           }
 
           /* Copy the block to the new location */
