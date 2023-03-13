@@ -1137,6 +1137,9 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   if(getenv("DEBUG_COMPACT") != NULL) {
     b = caml_global_barrier_begin();
 
+    const uintnat MAX_BUFFER_SIZE = 4096*1024;
+    uintnat* buffer = (uintnat*)malloc(MAX_BUFFER_SIZE * sizeof(uintnat));
+
     for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
       /* Find min and max evac */
       uintnat min_evac = UINTNAT_MAX;
@@ -1185,31 +1188,46 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
 
           while (fgets(line, sizeof(line), maps_fp) != NULL) { // read each line until EOF
             sscanf(line, "%lx-%lx", &start, &end); // scan the line for start and end addresses in hexadecimal format
-            //printf("read: %s\n", line);
             if (strchr(line + 18, 'r') != NULL && strchr(line + 49 , '/') == NULL) { // check if the region has read permission and is not mapped from a file or device
-              //printf("start: %lx, end: %lx, min_evac: %lx, max_evac: %lx, scanning: %s\n", start, end, min_evac, max_evac, line);
-              for(uintnat i = start; i < end; i += sizeof(uintnat)) { // iterate over the region in steps of the size of a q
-                uintnat value;
-                pread(fileno(mem_fp), &value, sizeof(value), i); // read the first value in the region
-                if (value >= min_evac && value <= max_evac) {
-                  // check if value is inside one of the evacuated pools
-                  pool* test_pool = heap->unswept_full_pools[sz_class];
+              uintnat i = start;
 
-                  while( test_pool != NULL ) {
-                    if( test_pool->evacuating == 1 ) {
-                      if( (uintnat)test_pool <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
-                        printf("Found pointer to evacuated pool at %lx in %lx-%lx", value, start, end);
-                        abort();
+              while(i < end) {
+                uintnat buffer_len = end - i;
+
+                if( buffer_len > MAX_BUFFER_SIZE ) {
+                  buffer_len = MAX_BUFFER_SIZE;
+                }
+
+                pread(fileno(mem_fp), buffer, buffer_len, i); // read the region into the buffer
+
+                for( int j = 0; j < buffer_len ; j++ ) {
+                  uintnat value = buffer[j];
+                  if (value >= min_evac && value <= max_evac) {
+                    // check if value is inside one of the evacuated pools
+                    pool* test_pool = heap->unswept_avail_pools[sz_class];
+
+                    while( test_pool != NULL ) {
+                      if( test_pool->evacuating == 1 ) {
+                        if( (uintnat)test_pool <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
+                          printf("Found pointer to evacuated pool at %lx in %lx-%lx\n", value, start, end);
+                          abort();
+                        }
                       }
+
+                      test_pool = test_pool->next;
                     }
                   }
                 }
+
+                i += buffer_len;
               }
             }
           }
         }
       }
     }
+
+    free(buffer);
 
     caml_global_barrier_end(b);
   }
