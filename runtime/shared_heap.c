@@ -1217,6 +1217,11 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
 
                 for( int j = 0; j < buffer_len ; j++ ) {
                   uintnat value = buffer[j];
+
+                  if(value > (uintnat)buffer && value < (uintnat)buffer + buffer_len) {
+                    continue; // Don't check pointers to the buffer
+                  }
+
                   if (value >= min_evac && value <= max_evac) {
                     // check if value is inside one of the evacuated pools
                     pool* test_pool = heap->unswept_avail_pools[sz_class];
