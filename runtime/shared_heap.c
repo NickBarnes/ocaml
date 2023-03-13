@@ -1023,6 +1023,9 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
       mlsize_t wh = wsize_sizeclass[sz_class];
       value *next = NULL;
 
+      /* So we don't trip the roots detector */
+      evac_pool->next_obj = 0;
+
       CAMLassert( evac_pool->evacuating == 1 );
 
       while (p + wh <= end) {
