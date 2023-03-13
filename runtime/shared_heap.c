@@ -1221,7 +1221,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
                     while( test_pool != NULL ) {
                       if( test_pool->evacuating == 1 ) {
                         if( ((uintnat)test_pool + POOL_HEADER_WSIZE) <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
-                          printf("Found pointer to evacuated pool at address %lx (value: %lx) in %lx-%lx\n", (i + j), value, start, end);
+                          printf("Found pointer to evacuated pool at address %lx (value: %lx) in %lx-%lx (pool start: %lx, pool end: %lx)\n", (i + j), value, start, end, (uintnat)test_pool + POOL_HEADER_WSIZE, (uintnat)test_pool + POOL_WSIZE);
                         }
                       }
 
