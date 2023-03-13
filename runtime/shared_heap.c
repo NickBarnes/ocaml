@@ -1213,12 +1213,12 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
                   buffer_len = MAX_BUFFER_SIZE;
                 }
 
-                pread(fileno(mem_fp), buffer, buffer_len, i); // read the region into the buffer
+                pread(fileno(mem_fp), buffer, buffer_len * sizeof(uintnat), i); // read the region into the buffer
 
                 for( int j = 0; j < buffer_len ; j++ ) {
                   uintnat value = buffer[j];
 
-                  if(value > (uintnat)buffer && value < (uintnat)buffer + buffer_len) {
+                  if(value > (uintnat)buffer && value < (uintnat)buffer + MAX_BUFFER_SIZE) {
                     continue; // Don't check pointers to the buffer
                   }
 
