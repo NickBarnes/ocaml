@@ -944,6 +944,15 @@ again:
 #define PTR_TO_PAGE(v) (((uintnat)(v)/sizeof(value)) & PAGE_MASK)
 #define PTR_TO_PAGE_OFFSET(v) ((((uintnat)(v)/sizeof(value)) & ~PAGE_MASK))
 
+static void clear_mark_stack(void) {
+  struct mark_stack* stk = Caml_state->mark_stack;
+  stk->count = 0;
+  for( int c = 0; c < stk->size ; c++ ) {
+    stk->stack[c].start = NULL;
+    stk->stack[c].end = NULL;
+  }
+}
+
 /* mark until the budget runs out or marking is done */
 static intnat mark(intnat budget) {
   caml_domain_state *domain_state = Caml_state;
@@ -1729,6 +1738,8 @@ void caml_empty_mark_stack (void)
     mark(1000);
     caml_handle_incoming_interrupts();
   }
+
+  clear_mark_stack();
 
   if (Caml_state->stat_blocks_marked)
     caml_gc_log("Finished marking major heap. Marked %u blocks",

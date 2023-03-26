@@ -820,39 +820,40 @@ static inline void compact_update_field(void* ignored,
       header_t vhd = Hd_val(v);
       tag_t tag = Tag_hd(vhd);
 
+      /* Thing we're pointed at isn't markable and so can't move */
       if (Has_status_hd(vhd, NOT_MARKABLE)) return;
 
-        if( tag == Infix_tag ) {
-          int infix_offset = Infix_offset_val(v);
-          /* v currently points to an Infix_tag inside of a Closure_tag.
-            the forwarding pointer we want is in the first field of the
-            Closure_tag. */
-          v -= infix_offset;
-          CAMLassert(Tag_val(v) == Closure_tag);
+      if( tag == Infix_tag ) {
+        int infix_offset = Infix_offset_val(v);
+        /* v currently points to an Infix_tag inside of a Closure_tag.
+          the forwarding pointer we want is in the first field of the
+          Closure_tag. */
+        v -= infix_offset;
+        CAMLassert(Tag_val(v) == Closure_tag);
 
-          if (Has_status_val(v, NOT_MARKABLE)
-            || Wosize_val(v) > SIZECLASS_MAX ) return;
+        if (Has_status_val(v, NOT_MARKABLE)
+          || Wosize_val(v) > SIZECLASS_MAX ) return;
 
-          /* look up the pool v is in and check if we're evacuating */
-          if( caml_pool_of_shared_block(v)->evacuating == 1 ) {
-            value fwd = Field(v, 0);
-            CAMLassert(Is_block(fwd));
-            /* We need to point not to the forwarded Closure though but to the
-              matching Infix_tag inside of it */
-            CAMLassert(Tag_val(fwd + infix_offset) == Infix_tag);
-            *p = fwd + infix_offset;
-          }
-        } else {
-          mlsize_t vsize = Whsize_wosize(Wosize_hd(vhd));
+        /* look up the pool v is in and check if we're evacuating */
+        if( caml_pool_of_shared_block(v)->evacuating == 1 ) {
+          value fwd = Field(v, 0);
+          CAMLassert(Is_block(fwd));
+          /* We need to point not to the forwarded Closure though but to the
+            matching Infix_tag inside of it */
+          CAMLassert(Tag_val(fwd + infix_offset) == Infix_tag);
+          *p = fwd + infix_offset;
+        }
+      } else {
+        mlsize_t vsize = Whsize_wosize(Wosize_hd(vhd));
 
-          if( vsize <= SIZECLASS_MAX )
-          {
-            if( caml_pool_of_shared_block(v)->evacuating == 1) {
-              /* Update p to point to the first field of v */
-              *p = Field(v, 0);
-            }
+        if( vsize <= SIZECLASS_MAX )
+        {
+          if( caml_pool_of_shared_block(v)->evacuating == 1) {
+            /* Update p to point to the first field of v */
+            *p = Field(v, 0);
           }
         }
+      }
     }
   }
 
@@ -1199,23 +1200,23 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
           }
 
           char line[256]; // buffer for storing each line
-          uintnat start, end; // variables for storing start and end addresses
+          uintnat start_bytes, end_bytes; // variables for storing start and end addresses
 
           while (fgets(line, sizeof(line), maps_fp) != NULL) { // read each line until EOF
-            sscanf(line, "%lx-%lx", &start, &end); // scan the line for start and end addresses in hexadecimal format
+            sscanf(line, "%lx-%lx", &start_bytes, &end_bytes); // scan the line for start and end addresses in hexadecimal format
             if (strchr(line + 18, 'r') != NULL && strchr(line + 49 , '/') == NULL) { // check if the region has read permission and is not mapped from a file or device
-              uintnat i = start;
+              uintnat i = start_bytes;
 
-              while(i < end) {
-                uintnat buffer_len = end - i;
+              while(i < end_bytes) {
+                uintnat buffer_len_words = (end_bytes - i) / sizeof(uintnat);
 
-                if( buffer_len > MAX_BUFFER_SIZE ) {
-                  buffer_len = MAX_BUFFER_SIZE;
+                if( buffer_len_words > MAX_BUFFER_SIZE ) {
+                  buffer_len_words = MAX_BUFFER_SIZE;
                 }
 
-                pread(fileno(mem_fp), buffer, buffer_len * sizeof(uintnat), i); // read the region into the buffer
+                pread(fileno(mem_fp), buffer, buffer_len_words * sizeof(uintnat), i); // read the region into the buffer
 
-                for( int j = 0; j < buffer_len ; j++ ) {
+                for( int j = 0; j < buffer_len_words ; j++ ) {
                   uintnat value = buffer[j];
 
                   if(value > (uintnat)buffer && value < (uintnat)buffer + MAX_BUFFER_SIZE) {
@@ -1229,7 +1230,10 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
                     while( test_pool != NULL ) {
                       if( test_pool->evacuating == 1 ) {
                         if( ((uintnat)test_pool + POOL_HEADER_WSIZE) <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
-                          printf("Found pointer to evacuated pool at address %lx (value: %lx) in %lx-%lx (pool start: %lx, pool end: %lx)\n", (i + j), value, start, end, (uintnat)test_pool + POOL_HEADER_WSIZE, (uintnat)test_pool + POOL_WSIZE);
+                          uintnat* ptr = (uintnat*)value;
+                          if( Whsize_val(ptr) == sz_class ) {
+                            printf("Found pointer to evacuated pool at address %lx (value: %lx) in %lx-%lx (pool start: %lx, pool end: %lx)\n", (i + j * sizeof(uintnat)), value, start_bytes, end_bytes, (uintnat)test_pool + POOL_HEADER_WSIZE, (uintnat)test_pool + POOL_WSIZE);
+                          }
                         }
                       }
 
@@ -1238,7 +1242,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
                   }
                 }
 
-                i += buffer_len;
+                i += buffer_len_words * sizeof(uintnat);
               }
             }
           }
