@@ -700,6 +700,15 @@ Caml_inline void mark_stack_push_range(struct mark_stack* stk,
   me = &stk->stack[stk->count++];
   me->start = start;
   me->end = end;
+
+  #if DEBUG
+  {
+    value* p;
+    for (p = start; p < end; p++) {
+      CAMLassert(!(Is_block(*p) && p == 0));
+    }
+  }
+  #endif
 }
 
 /* returns the work done by skipping unmarkable objects */

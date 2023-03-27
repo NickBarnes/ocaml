@@ -958,6 +958,8 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
     int live_blocks = 0;
 
     #ifdef DEBUG
+    CAMLassert(heap->avail_pools[sz_class] == NULL);
+    CAMLassert(heap->full_pools[sz_class] == NULL);
     /* Check that there are no pools waiting for adoption */
     if( participants[0] == Caml_state ) {
       CAMLassert(pool_freelist.global_avail_pools[sz_class] == NULL);
@@ -1058,9 +1060,11 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
           /* Set first field of p to as a forwarding pointer */
           Field(Val_hp(p), 0) = Val_hp(new_p);
 
+          #ifdef DEBUG
           for( int w = 1 ; w < Wosize_hd(hd) ; w++ ) {
-            Field(Val_hp(p), w) = 0;
+            Field(Val_hp(p), w) = Debug_free_major;
           }
+          #endif
         } else {
           memset(p, 0, wh * sizeof(value));
         }
@@ -1134,6 +1138,8 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   }
 
   /* Large allocations */
+  CAMLassert(heap->swept_large == NULL);
+
   for( large_alloc* la = heap->unswept_large;
         la != NULL; la = la->next ) {
     value* p = (value*)((char*)la + LARGE_ALLOC_HEADER_SZ);
@@ -1232,7 +1238,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
                         if( ((uintnat)test_pool + POOL_HEADER_WSIZE) <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
                           uintnat* ptr = (uintnat*)value;
                           if( Whsize_val(ptr) == sz_class ) {
-                            printf("Found pointer to evacuated pool at address %lx (value: %lx) in %lx-%lx (pool start: %lx, pool end: %lx)\n", (i + j * sizeof(uintnat)), value, start_bytes, end_bytes, (uintnat)test_pool + POOL_HEADER_WSIZE, (uintnat)test_pool + POOL_WSIZE);
+                            // printf("Found pointer to evacuated pool at address %lx (value: %lx) in %lx-%lx (pool start: %lx, pool end: %lx)\n", (i + j * sizeof(uintnat)), value, start_bytes, end_bytes, (uintnat)test_pool + POOL_HEADER_WSIZE, (uintnat)test_pool + POOL_WSIZE);
                           }
                         }
                       }
@@ -1280,7 +1286,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
 
         #ifdef DEBUG
         for(int p = POOL_HEADER_WSIZE; p < POOL_WSIZE; p++) {
-          *((value*)cur_pool + p) = Debug_free_unused;
+          *((value*)cur_pool + p) = Debug_free_major;
         }
         #endif
 
