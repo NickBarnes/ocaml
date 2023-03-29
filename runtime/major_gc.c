@@ -720,6 +720,10 @@ static intnat mark_stack_push_block(struct mark_stack* stk, value block)
   if (Tag_val(block) == Closure_tag) {
     /* Skip the code pointers and integers at beginning of closure;
        start scanning at the first word of the environment part. */
+    #ifdef DEBUG
+    CAMLassert(Closinfo_val(block) != Debug_free_minor);
+    #endif
+
     offset = Start_env_closinfo(Closinfo_val(block));
 
     CAMLassert(offset <= Wosize_val(block)

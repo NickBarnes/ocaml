@@ -86,6 +86,12 @@ static void clear_table (struct generic_table *tbl)
 {
     tbl->ptr = tbl->base;
     tbl->limit = tbl->threshold;
+
+    #ifdef DEBUG
+    for(char* p = tbl->base; p < tbl->threshold; p++) {
+      *p = 0;
+    }
+    #endif
 }
 
 struct caml_minor_tables* caml_alloc_minor_tables(void)

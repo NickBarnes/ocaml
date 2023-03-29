@@ -410,6 +410,7 @@ struct pool_block {
 #endif
   struct pool_block *next;
   struct pool_block *prev;
+  int alloc_size;
   /* Use C99's flexible array types if possible */
 #if (__STDC_VERSION__ >= 199901L)
   union max_align data[];  /* not allocated, used for alignment purposes */
@@ -504,6 +505,7 @@ CAMLexport caml_stat_block caml_stat_alloc_noexc(asize_t sz)
 #ifdef DEBUG
     memset(&(pb->data), Debug_uninit_stat, sz);
     pb->magic = Debug_pool_magic;
+    pb->alloc_size = sz;
 #endif
     link_pool_block(pb);
     return &(pb->data);
@@ -567,6 +569,9 @@ CAMLexport void caml_stat_free(caml_stat_block b)
     struct pool_block *pb = get_pool_block(b);
     if (pb == NULL) return;
     unlink_pool_block(pb);
+    #ifdef DEBUG
+    memset(b, 0, pb->alloc_size);
+    #endif
     free(pb);
   }
 }
