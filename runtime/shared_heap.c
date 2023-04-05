@@ -265,7 +265,7 @@ Caml_inline void pool_initialize(pool* r,
     p[0] = 0; /* zero header indicates free object */
     p[1] = (value)(p - wh);
     #ifdef DEBUG
-    for(int w = 2 ; w < wh-1; w++ ) {
+    for(int w = 2 ; w < wh; w++ ) {
       p[w] = Debug_free_major;
     }
     #endif
@@ -920,6 +920,8 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   uintnat saved_cycles = caml_major_cycles_completed;
   uintnat cycles;
 
+  int log_compact = getenv("LOG_COMPACT") != NULL;
+
   /* Do three cycles so we know we have no garbage in the heap */
   for( cycles = saved_cycles; cycles < saved_cycles+3 ; cycles++ ) {
     caml_finish_major_cycle_from_stw(cycles, domain_state, participating_count,
@@ -1037,7 +1039,11 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
       while (p + wh <= end) {
         header_t hd = (header_t)atomic_load_relaxed((atomic_uintnat*)p);
 
-        if( hd != 0 ) {
+        if( hd != 0 && Has_status_hd(hd, caml_global_heap_state.MARKED) ) {
+          if( log_compact ) {
+            printf("promoting %p\n", p);
+          }
+
           /* live block in an evacuating pool, now we allocate it in to cur_pool */
           value* new_p = cur_pool->next_obj;
           next = (value*)new_p[1];
@@ -1062,15 +1068,9 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
 
           /* Set first field of p to as a forwarding pointer */
           Field(Val_hp(p), 0) = Val_hp(new_p);
-
-          #ifdef DEBUG
-          for( int w = 1 ; w < Wosize_hd(hd) ; w++ ) {
-            Field(Val_hp(p), w) = Debug_free_major;
-          }
-          #endif
         } else {
           #ifdef DEBUG
-          for( int w = 1 ; w < Whsize_hd(hd) ; w++ ) {
+          for( int w = 1 ; w < wh-1 ; w++ ) {
             Field(Val_hp(p), w) = Debug_free_major;
           }
           #endif
@@ -1115,7 +1115,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
       mlsize_t wh = wsize_sizeclass[sz_class];
 
       while (p + wh <= end) {
-        if( *p != 0 ) {
+        if( *p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.MARKED) ) {
           compact_update_block(p);
         }
           p += wh;
@@ -1134,7 +1134,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
       mlsize_t wh = wsize_sizeclass[sz_class];
 
       while (p + wh <= end) {
-        if( *p != 0 ) {
+        if( *p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.MARKED)) {
           compact_update_block(p);
         }
           p += wh;
@@ -1167,130 +1167,6 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   }
 
   caml_global_barrier();
-
-  /* DEBUG phase */
-/*
-  if(getenv("DEBUG_COMPACT") != NULL) {
-    const uintnat MAX_BUFFER_SIZE = 4096*1024;
-    int found_evac_pointer = 0;
-    uintnat* buffer = (uintnat*)malloc(MAX_BUFFER_SIZE * sizeof(uintnat));
-
-    // for each size class, for each evacuated pool zero contents
-    for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
-      pool* cur_pool = heap->unswept_avail_pools[sz_class];
-
-      while( cur_pool != NULL ) {
-        if( cur_pool->evacuating == 1 ) {
-          value* p = (value*)((char*)cur_pool + POOL_HEADER_SZ);
-          memset(p, 0, (POOL_WSIZE - POOL_HEADER_WSIZE) * sizeof(value));
-        }
-
-        cur_pool = cur_pool->next;
-      }
-    }
-
-    caml_global_barrier();
-
-    for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
-      uintnat min_evac = UINTNAT_MAX;
-      uintnat max_evac = 0;
-
-      pool* test_pool = heap->unswept_avail_pools[sz_class];
-      int found_evac = 0;
-
-      if( test_pool != NULL ) {
-        while( test_pool != NULL ) {
-          if( test_pool->evacuating == 1 ) {
-            found_evac = 1;
-            if( (uintnat)test_pool < min_evac ) {
-              min_evac = (uintnat)test_pool;
-            }
-
-            if( (uintnat)test_pool > max_evac ) {
-              max_evac = (uintnat)test_pool;
-            }
-          }
-
-          test_pool = test_pool->next;
-        }
-
-        if( !found_evac ) {
-          continue;
-        }
-
-        // printf("min_evac: %lx, max_evac: %lx\n", min_evac, max_evac);
-
-        {
-          FILE *maps_fp = fopen("/proc/self/maps", "r"); // open /proc/self/maps for reading
-          if (maps_fp == NULL) {
-            perror("fopen maps");
-            exit(EXIT_FAILURE);
-          }
-
-          FILE *mem_fp = fopen("/proc/self/mem", "r"); // open /proc/self/mem for reading
-          if (mem_fp == NULL) {
-            perror("fopen mem");
-            exit(EXIT_FAILURE);
-          }
-
-          char line[256]; // buffer for storing each line
-          uintnat start_bytes, end_bytes; // variables for storing start and end addresses
-
-          while (fgets(line, sizeof(line), maps_fp) != NULL) { // read each line until EOF
-            sscanf(line, "%lx-%lx", &start_bytes, &end_bytes); // scan the line for start and end addresses in hexadecimal format
-            if (strchr(line + 18, 'r') != NULL && strchr(line + 49 , '/') == NULL) { // check if the region has read permission and is not mapped from a file or device
-              uintnat i = start_bytes;
-
-              while(i < end_bytes) {
-                uintnat buffer_len_words = (end_bytes - i) / sizeof(uintnat);
-
-                if( buffer_len_words > MAX_BUFFER_SIZE ) {
-                  buffer_len_words = MAX_BUFFER_SIZE;
-                }
-
-                pread(fileno(mem_fp), buffer, buffer_len_words * sizeof(uintnat), i); // read the region into the buffer
-
-                for( int j = 0; j < buffer_len_words ; j++ ) {
-                  uintnat value = buffer[j];
-
-                  if(value > (uintnat)buffer && value < (uintnat)buffer + MAX_BUFFER_SIZE) {
-                    continue; // Don't check pointers to the buffer
-                  }
-
-                  if (value >= min_evac && value <= max_evac) {
-                    // check if value is inside one of the evacuated pools
-                    pool* test_pool = heap->unswept_avail_pools[sz_class];
-
-                    while( test_pool != NULL ) {
-                      if( test_pool->evacuating == 1 ) {
-                        if( ((uintnat)test_pool + POOL_HEADER_WSIZE) <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
-                          found_evac_pointer = 1;
-                          printf("Found pointer to evacuated pool at address 0x%lx (value: %lx) in %lx-%lx (pool start: %lx, pool end: %lx)\n", (i + j * sizeof(uintnat)), value, start_bytes, end_bytes, (uintnat)test_pool + POOL_HEADER_WSIZE, (uintnat)test_pool + POOL_WSIZE);
-                        }
-                      }
-
-                      test_pool = test_pool->next;
-                    }
-                  }
-                }
-
-                i += buffer_len_words * sizeof(uintnat);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    free(buffer);
-
-    if( found_evac_pointer == 1 ) {
-      // print buffer start and end addresses
-      printf("Buffer start: %lx, Buffer end: %lx\n", (uintnat)buffer, (uintnat)buffer + MAX_BUFFER_SIZE);
-    }
-
-    caml_global_barrier();
-  }*/
 
   /* Third phase: each evacuating page needs to have it's flag reset and
       be moved to the free list. Unfortunately this means a lot of

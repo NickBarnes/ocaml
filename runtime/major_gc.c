@@ -705,7 +705,7 @@ Caml_inline void mark_stack_push_range(struct mark_stack* stk,
   {
     value* p;
     for (p = start; p < end; p++) {
-      CAMLassert(!(Is_block(*p) && p == 0));
+      CAMLassert(!(Is_block(*p) && *p == 0));
     }
   }
   #endif
