@@ -52,9 +52,14 @@ typedef struct pool {
   caml_domain_state* owner;
   sizeclass sz;
   int evacuating;
-} pool;
-CAML_STATIC_ASSERT(sizeof(pool) == Bsize_wsize(POOL_HEADER_WSIZE));
-#define POOL_HEADER_SZ sizeof(pool)
+} pool_s, *pool_t;
+
+CAML_STATIC_ASSERT(sizeof(pool_s) == Bsize_wsize(POOL_HEADER_WSIZE));
+#define POOL_HEADER_SZ sizeof(pool_s)
+#define POOL_SIZE Bsize_wsize(POOL_WSIZE)
+#define POOL_LIMIT(p) ((value*)((char*)(p) + POOL_SIZE))
+#define POOL_FIRST(p) ((value*)((char*)(p) + POOL_HEADER_SZ))
+#define POOL_BLOCKS(p) ((POOL_WSIZE-POOL_HEADER_WSIZE) / wsize_sizeclass[(p)->sz])
 
 typedef struct large_alloc {
   caml_domain_state* owner;
@@ -65,12 +70,12 @@ CAML_STATIC_ASSERT(sizeof(large_alloc) % sizeof(value) == 0);
 
 static struct {
   caml_plat_mutex lock;
-  pool* free;
+  pool_t free;
 
   /* these only contain swept memory of terminated domains*/
   struct heap_stats stats;
-  pool* global_avail_pools[NUM_SIZECLASSES];
-  pool* global_full_pools[NUM_SIZECLASSES];
+  pool_t global_avail_pools[NUM_SIZECLASSES];
+  pool_t global_full_pools[NUM_SIZECLASSES];
   large_alloc* global_large;
 } pool_freelist = {
   CAML_PLAT_MUTEX_INITIALIZER,
@@ -83,10 +88,10 @@ static struct {
 
 /* readable and writable only by the current thread */
 struct caml_heap_state {
-  pool* avail_pools[NUM_SIZECLASSES];
-  pool* full_pools[NUM_SIZECLASSES];
-  pool* unswept_avail_pools[NUM_SIZECLASSES];
-  pool* unswept_full_pools[NUM_SIZECLASSES];
+  pool_t avail_pools[NUM_SIZECLASSES];
+  pool_t full_pools[NUM_SIZECLASSES];
+  pool_t unswept_avail_pools[NUM_SIZECLASSES];
+  pool_t unswept_full_pools[NUM_SIZECLASSES];
 
   large_alloc* swept_large;
   large_alloc* unswept_large;
@@ -102,7 +107,7 @@ struct caml_heap_state {
 /* You need to hold the [pool_freelist] lock to call these functions. */
 static void orphan_heap_stats_with_lock(struct caml_heap_state *);
 static void adopt_pool_stats_with_lock(struct caml_heap_state *,
-                                       pool *, sizeclass);
+                                       pool_t, sizeclass);
 
 struct caml_heap_state* caml_init_shared_heap (void) {
   int i;
@@ -124,10 +129,10 @@ struct caml_heap_state* caml_init_shared_heap (void) {
   return heap;
 }
 
-static int move_all_pools(pool** src, pool** dst, caml_domain_state* new_owner){
+static int move_all_pools(pool_t* src, pool_t* dst, caml_domain_state* new_owner){
   int count = 0;
   while (*src) {
-    pool* p = *src;
+    pool_t p = *src;
     *src = p->next;
     p->owner = new_owner;
     p->next = *dst;
@@ -173,15 +178,15 @@ void caml_teardown_shared_heap(struct caml_heap_state* heap) {
 /* Allocating and deallocating pools from the global freelist. */
 
 #define POOLS_PER_ALLOCATION 1
-static pool* pool_acquire(struct caml_heap_state* local) {
-  pool* r;
+static pool_t pool_acquire(struct caml_heap_state* local) {
+  pool_t r = NULL;
 
   void* mem = caml_mem_map(Bsize_wsize(POOL_WSIZE) * POOLS_PER_ALLOCATION,
                             Bsize_wsize(POOL_WSIZE), 0 /* allocate */);
   int i;
   if (mem) {
     for (i=0; i<POOLS_PER_ALLOCATION; i++) {
-      r = (pool*)(((uintnat)mem) + ((uintnat)i) * Bsize_wsize(POOL_WSIZE));
+      r = (pool_t)(((uintnat)mem) + ((uintnat)i) * Bsize_wsize(POOL_WSIZE));
       r->owner = NULL;
     }
   }
@@ -191,7 +196,7 @@ static pool* pool_acquire(struct caml_heap_state* local) {
 }
 
 static void pool_release(struct caml_heap_state* local,
-                         pool* pool,
+                         pool_t pool,
                          sizeclass sz) {
   pool->owner = NULL;
   CAMLassert(pool->sz == sz);
@@ -206,12 +211,12 @@ static void pool_release(struct caml_heap_state* local,
 static void free_pool_freelist(void) {
   caml_plat_lock(&pool_freelist.lock);
   /* free all but the first item on the freelist */
-  pool* o = pool_freelist.free;
+  pool_t o = pool_freelist.free;
 
   if( o && o->next != NULL ) {
-    pool* p = o->next;
+    pool_t p = o->next;
     while (p) {
-      pool* next = p->next;
+      pool_t next = p->next;
       caml_mem_unmap(p, Bsize_wsize(POOL_WSIZE));
       p = next;
     }
@@ -221,7 +226,7 @@ static void free_pool_freelist(void) {
   caml_plat_unlock(&pool_freelist.lock);
 }
 
-static void calc_pool_stats(pool* a, sizeclass sz, struct heap_stats* s) {
+static void calc_pool_stats(pool_t a, sizeclass sz, struct heap_stats* s) {
   value* p = (value*)((char*)a + POOL_HEADER_SZ);
   value* end = (value*)a + POOL_WSIZE;
   mlsize_t wh = wsize_sizeclass[sz];
@@ -243,7 +248,7 @@ static void calc_pool_stats(pool* a, sizeclass sz, struct heap_stats* s) {
 }
 
 /* Initialize a pool and its object freelist */
-Caml_inline void pool_initialize(pool* r,
+Caml_inline void pool_initialize(pool_t r,
                                  sizeclass sz,
                                  caml_domain_state* owner)
 {
@@ -276,15 +281,15 @@ Caml_inline void pool_initialize(pool* r,
 
 /* Allocating an object from a pool */
 static intnat pool_sweep(struct caml_heap_state* local,
-                         pool**,
+                         pool_t*,
                          sizeclass sz ,
                          int release_to_global_pool);
 
 /* Adopt pool from the pool_freelist avail and full pools
    to satisfy an allocation */
-static pool* pool_global_adopt(struct caml_heap_state* local, sizeclass sz)
+static pool_t pool_global_adopt(struct caml_heap_state* local, sizeclass sz)
 {
-  pool* r = NULL;
+  pool_t r = NULL;
   int adopted_pool = 0;
 
   /* probably no available pools out there to be had */
@@ -343,8 +348,8 @@ static pool* pool_global_adopt(struct caml_heap_state* local, sizeclass sz)
 }
 
 /* Allocating an object from a pool */
-static pool* pool_find(struct caml_heap_state* local, sizeclass sz) {
-  pool* r;
+static pool_t pool_find(struct caml_heap_state* local, sizeclass sz) {
+  pool_t r = NULL;
 
   /* Hopefully we have a pool we can use directly */
   r = local->avail_pools[sz];
@@ -382,7 +387,7 @@ static pool* pool_find(struct caml_heap_state* local, sizeclass sz) {
 static void* pool_allocate(struct caml_heap_state* local, sizeclass sz) {
   value* p;
   value* next;
-  pool* r = pool_find(local, sz);
+  pool_t r = pool_find(local, sz);
 
   if (!r) return 0;
 
@@ -452,13 +457,13 @@ value* caml_shared_try_alloc(struct caml_heap_state* local, mlsize_t wosize,
   return p;
 }
 
-struct pool* caml_pool_of_shared_block(value v)
+pool_t caml_pool_of_shared_block(value v)
 {
   mlsize_t whsize;
   CAMLassert (Is_block(v) && !Is_young(v));
   whsize = Whsize_wosize(Wosize_val(v));
   if (whsize > 0 && whsize <= SIZECLASS_MAX) {
-    return (pool*)((uintnat)v &~(POOL_WSIZE * sizeof(value) - 1));
+    return (pool_t)((uintnat)v &~(POOL_SIZE - 1));
   } else {
     return 0;
   }
@@ -466,10 +471,10 @@ struct pool* caml_pool_of_shared_block(value v)
 
 /* Sweeping */
 
-static intnat pool_sweep(struct caml_heap_state* local, pool** plist,
+static intnat pool_sweep(struct caml_heap_state* local, pool_t* plist,
                          sizeclass sz, int release_to_global_pool) {
   intnat work = 0;
-  pool* a = *plist;
+  pool_t a = *plist;
   if (!a) return 0;
   *plist = a->next;
 
@@ -522,7 +527,7 @@ static intnat pool_sweep(struct caml_heap_state* local, pool** plist,
     if (release_to_global_pool) {
       pool_release(local, a, sz);
     } else {
-      pool** list = all_used ? &local->full_pools[sz] : &local->avail_pools[sz];
+      pool_t* list = all_used ? &local->full_pools[sz] : &local->avail_pools[sz];
       a->next = *list;
       *list = a;
     }
@@ -611,7 +616,7 @@ uintnat caml_heap_blocks(struct caml_heap_state* local) {
   return local->stats.pool_live_blocks + local->stats.large_blocks;
 }
 
-void caml_redarken_pool(struct pool* r, scanning_action f, void* fdata) {
+void caml_redarken_pool(pool_t r, scanning_action f, void* fdata) {
   mlsize_t wh = wsize_sizeclass[r->sz];
   value* p = (value*)((char*)r + POOL_HEADER_SZ);
   value* end = (value*)((char*)r + Bsize_wsize(POOL_WSIZE));
@@ -639,7 +644,7 @@ static void orphan_heap_stats_with_lock(struct caml_heap_state *heap) {
    the heap stats of the adopting domain.
    You need to hold the [pool_freelist] lock. */
 static void adopt_pool_stats_with_lock(
-  struct caml_heap_state* adopter, pool *r, sizeclass sz)
+  struct caml_heap_state* adopter, pool_t r, sizeclass sz)
 {
     struct heap_stats pool_stats = { 0, };
 
@@ -808,120 +813,107 @@ void caml_verify_heap(caml_domain_state *domain) {
 
 static inline void compact_update_field(void* ignored,
                                         value v,
-                                        volatile value* p) {
-    if( Is_block(v) ) {
-      CAMLassert(!Is_young(v));
+                                        volatile value* p)
+{
+  if (!v || !Is_block(v)) return;
 
-      header_t vhd = Hd_val(v);
-      tag_t tag = Tag_hd(vhd);
+  CAMLassert(!Is_young(v));
 
-      /* Thing we're pointed at isn't markable and so can't move */
-      if (Has_status_hd(vhd, NOT_MARKABLE)) return;
+  tag_t tag = Tag_val(v);
+  int infix_offset = 0;
 
-      if( tag == Infix_tag ) {
-        int infix_offset = Infix_offset_val(v);
-        /* v currently points to an Infix_tag inside of a Closure_tag.
-          the forwarding pointer we want is in the first field of the
-          Closure_tag. */
-        v -= infix_offset;
-        CAMLassert(Tag_val(v) == Closure_tag);
+  /* Thing we're pointed at isn't markable and so can't move */
+  if (Has_status_val(v, NOT_MARKABLE)) return;
 
-        if (Has_status_val(v, NOT_MARKABLE)
-          || Whsize_val(v) > SIZECLASS_MAX ) return;
-
-        /* look up the pool v is in and check if we're evacuating */
-        if( caml_pool_of_shared_block(v)->evacuating == 1 ) {
-          value fwd = Field(v, 0);
-          CAMLassert( caml_pool_of_shared_block(fwd)->evacuating == 0 );
-          CAMLassert(Is_block(fwd));
-          /* We need to point not to the forwarded Closure though but to the
-            matching Infix_tag inside of it */
-          CAMLassert(Tag_val(fwd + infix_offset) == Infix_tag);
-          *p = fwd + infix_offset;
-        }
-      } else {
-        mlsize_t vsize = Whsize_hd(vhd);
-
-        if( vsize <= SIZECLASS_MAX )
-        {
-          if( caml_pool_of_shared_block(v)->evacuating == 1) {
-            value fwd = Field(v,0);
-            CAMLassert( caml_pool_of_shared_block(fwd)->evacuating == 0 );
-            CAMLassert(Is_block(fwd));
-            /* Update p to point to the first field of v */
-            *p = fwd;
-            /* Check the original block and the forwarded block are the same size*/
-            CAMLassert(Whsize_val(*p) == vsize);
-          }
-        }
-      }
-    }
+  if (tag == Infix_tag) {
+    /* v currently points to an Infix_tag inside of a closure.
+      the forwarding pointer we want is in the first field of the
+      closure. */
+    infix_offset = Infix_offset_val(v);
+    v -= infix_offset;
+    CAMLassert(Tag_val(v) == Closure_tag);
   }
 
-static void compact_update_block(value* p) {
+  if (Has_status_val(v, NOT_MARKABLE)
+      || Whsize_val(v) > SIZECLASS_MAX) return;
+
+  pool_t pool = caml_pool_of_shared_block(v);
+
+  /* look up the pool v is in and check if we're evacuating */
+  if (pool->evacuating == 1) {
+    value fwd = Field(v, 0);
+    CAMLassert(caml_pool_of_shared_block(fwd)->evacuating == 0);
+    CAMLassert(Is_block(fwd));
+    CAMLassert(Whsize_val(fwd) == Whsize_val(v));
+
+    *p = fwd + infix_offset;
+    CAMLassert(Tag_val(p) == tag);
+  }
+}
+
+static void compact_update_block(value* p)
+{
   header_t hd = Hd_hp(p);
   tag_t tag = Tag_hd(hd);
+  mlsize_t offset = 0;
 
-  if( hd != 0 ) {
-    mlsize_t wosz = Wosize_hd(hd);
-    mlsize_t i;
-    uintnat offset = 0;
+  if (!hd) return; /* empty block */
 
-    if( tag == Infix_tag ) {
-      p -= Infix_offset_val(Val_hp(p));
-      tag = Tag_hp(p);
-      wosz = Wosize_hp(p);
-      CAMLassert(tag == Closure_tag);
+  CAMLassert(tag != Infix_tag); /* impossible at the head of a block */
+
+  if (tag == Cont_tag) {
+    value stk = Field(Val_hp(p), 0);
+    if (Ptr_val(stk) != NULL) {
+      caml_scan_stack(&compact_update_field, 0, NULL, Ptr_val(stk), 0);
+    }
+  } else {
+    if (tag == Closure_tag) {
+      offset = Start_env_closinfo(Closinfo_val(Val_hp(p)));
     }
 
-    if( tag == Cont_tag ) {
-      value stk = Field(Val_hp(p), 0);
-      if (Ptr_val(stk) != NULL) {
-        caml_scan_stack(&compact_update_field, 0, NULL, Ptr_val(stk), 0);
-      }
-    } else {
-      if( tag == Closure_tag ) {
-        offset = Start_env_closinfo(Closinfo_val(Val_hp(p)));
-      }
-
-      if( tag < No_scan_tag ) {
-        for( i = offset; i < wosz; i++ ) {
-          compact_update_field(NULL, Field(Val_hp(p), i), &Field(Val_hp(p), i));
-        }
+    if (tag < No_scan_tag) {
+      while(offset < Wosize_hd(hd)) {
+        compact_update_field(NULL, Field(Val_hp(p), offset), &Field(Val_hp(p), offset));
+        ++ offset;
       }
     }
   }
 }
 
-static void compact_update_ephe_list(value ephe_list) {
-  while( ephe_list != 0 ) {
-    mlsize_t wosize = Wosize_val(ephe_list);
+static void compact_update_ephe(value *ephe_p)
+{
+  compact_update_field(NULL, *ephe_p, ephe_p);
 
-    if( Ephe_link(ephe_list) != 0 ) {
-      compact_update_field(NULL, Field(ephe_list, CAML_EPHE_LINK_OFFSET),
-        &Field(ephe_list, CAML_EPHE_LINK_OFFSET));
+  value ephe = *ephe_p;
+  while (ephe) {
+    mlsize_t wosize = Wosize_val(ephe);
+
+    if (Ephe_link(ephe)) {
+      compact_update_field(NULL, Field(ephe, CAML_EPHE_LINK_OFFSET),
+                           &Field(ephe, CAML_EPHE_LINK_OFFSET));
     }
 
-    compact_update_field(NULL, Field(ephe_list, CAML_EPHE_DATA_OFFSET),
-      &Field(ephe_list, CAML_EPHE_DATA_OFFSET));
+    compact_update_field(NULL, Field(ephe, CAML_EPHE_DATA_OFFSET),
+                         &Field(ephe, CAML_EPHE_DATA_OFFSET));
 
-    for( int i = CAML_EPHE_FIRST_KEY ; i < wosize ; i++ ) {
-      compact_update_field(NULL, Field(ephe_list, i), &Field(ephe_list, i));
+    for (int i = CAML_EPHE_FIRST_KEY; i < wosize ; i++) {
+      compact_update_field(NULL, Field(ephe, i), &Field(ephe, i));
     }
 
-    ephe_list = Ephe_link(ephe_list);
+    ephe = Ephe_link(ephe);
   }
 }
 
 /* Heap compaction */
 static void compact_heap(caml_domain_state* domain_state, void* data,
                          int participating_count,
-                         caml_domain_state** participants) {
+                         caml_domain_state** participants)
+{
   uintnat saved_cycles = caml_major_cycles_completed;
   uintnat cycles;
 
   /* Do three cycles so we know we have no garbage in the heap */
-  for( cycles = saved_cycles; cycles < saved_cycles+3 ; cycles++ ) {
+  for (cycles = saved_cycles; cycles < saved_cycles+3 ; cycles++) {
     caml_finish_major_cycle_from_stw(cycles, domain_state, participating_count,
       participants);
   }
@@ -949,14 +941,14 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   /* First phase */
   caml_global_barrier();
 
+  struct caml_heap_state *heap = Caml_state->shared_heap;
+
   int sz_class;
-
-  struct caml_heap_state* heap = Caml_state->shared_heap;
-
   for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
     /* We only care about moving things in pools that aren't full */
-    pool* cur_pool = heap->unswept_avail_pools[sz_class];
-    pool* evac_pool = NULL;
+    pool_t pool = heap->unswept_avail_pools[sz_class];
+    pool_t from_pool;
+    mlsize_t wh = wsize_sizeclass[sz_class];
 
     int live_blocks = 0;
 
@@ -964,193 +956,137 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
     CAMLassert(heap->avail_pools[sz_class] == NULL);
     CAMLassert(heap->full_pools[sz_class] == NULL);
     /* Check that there are no pools waiting for adoption */
-    if( participants[0] == Caml_state ) {
+    if (participants[0] == Caml_state) {
       CAMLassert(pool_freelist.global_avail_pools[sz_class] == NULL);
       CAMLassert(pool_freelist.global_full_pools[sz_class] == NULL);
     }
     #endif
 
-    if( cur_pool == NULL ) {
+    if (!pool) {
       /* No partially filled pools for this size, nothing to do */
       continue;
     }
 
-    while( cur_pool != NULL ) {
-      /* We need to calculate the number of live blocks in the pool */
-      value* p = (value*)((char*)cur_pool + POOL_HEADER_SZ);
-      value* end = (value*)cur_pool + POOL_WSIZE;
-      mlsize_t wh = wsize_sizeclass[sz_class];
-
-      while (p + wh <= end) {
-        header_t hd = (header_t)atomic_load_relaxed((atomic_uintnat*)p);
-
-        if( hd != 0 ) {
+    /* Count live blocks in the pool */
+    while (pool) {
+      value* end = POOL_LIMIT(pool);
+      for (value *p = POOL_FIRST(pool); p + wh <= end; p += wh) {
+        if (Hd_hp(p)) {
           live_blocks += 1;
         }
-
-        p += wh;
       }
-
-      cur_pool = cur_pool->next;
+      pool = pool->next;
     }
 
     /* Allocate enough new pools at the front so _everything_ is moved */
     /*int blocks_per_pool = ((POOL_WSIZE - POOL_HEADER_SZ) / wsize_sizeclass[sz_class]);
     int new_pools = (live_blocks + blocks_per_pool - 1) / blocks_per_pool;
     for( int i = 0; i < new_pools; i++ ) {
-      pool* new_pool = pool_acquire(heap);
+      pool_t new_pool = pool_acquire(heap);
       new_pool->next = heap->unswept_avail_pools[sz_class];
       heap->unswept_avail_pools[sz_class] = new_pool;
       pool_initialize(new_pool, sz_class, Caml_state);
     }*/
 
-    /* cur_pool is now the pool we're allocating in to */
-    cur_pool = heap->unswept_avail_pools[sz_class];
-    /* evac_pool will be the pool we're evacuating from */
-
+    /* Identify the first pool to be evacuated */
+    pool = heap->unswept_avail_pools[sz_class];
     int cur_blocks = 0;
-
-    /* Now decide which pools will be allocated in to and which will be
-      evacuated. */
-    while( cur_pool != NULL ) {
-      if( cur_blocks > live_blocks ) {
-        /* Mark this pool as evacuating */
-        cur_pool->evacuating = 1;
-
-        if( evac_pool == NULL ) {
-          evac_pool = cur_pool;
-        }
-      }
-
-      cur_blocks += (POOL_WSIZE - POOL_HEADER_SZ) / wsize_sizeclass[sz_class];
-
-      cur_pool = cur_pool->next;
+    while (pool && cur_blocks < live_blocks) {
+      cur_blocks += POOL_BLOCKS(pool);
+      pool = pool->next;
     }
+    from_pool = pool;
 
-    /* Reset to the first pool to allocate in to */
-    cur_pool = heap->unswept_avail_pools[sz_class];
+    /* Evacuate */
+    while (from_pool) {
+      value* end = POOL_LIMIT(from_pool);
+      from_pool->evacuating = 1;
+      from_pool->next_obj = 0; /* don't trip the roots detector */
 
-    CAMLassert( cur_pool->evacuating == 0 );
+      for (value *p = POOL_FIRST(from_pool); p + wh <= end; p += wh) {
+        header_t hd = Hd_hp(p);
 
-    /* Now we start from evac_pool and evacuate live blocks to cur_pool */
-    while( evac_pool != NULL ) {
-      value* p = (value*)((char*)evac_pool + POOL_HEADER_SZ);
-      value* end = (value*)evac_pool + POOL_WSIZE;
-      mlsize_t wh = wsize_sizeclass[sz_class];
-      value *next = NULL;
+        if (hd) {
+          /* live block in an evacuating pool, now we move it into to_pool */
+          pool_t to_pool = heap->unswept_avail_pools[sz_class];
+          CAMLassert (to_pool->evacuating == 0);
 
-      /* So we don't trip the roots detector */
-      evac_pool->next_obj = 0;
-
-      CAMLassert( evac_pool->evacuating == 1 );
-
-      while (p + wh <= end) {
-        header_t hd = (header_t)atomic_load_relaxed((atomic_uintnat*)p);
-
-        if( hd != 0 ) {
-          /* live block in an evacuating pool, now we allocate it in to cur_pool */
-          value* new_p = cur_pool->next_obj;
-          next = (value*)new_p[1];
-          cur_pool->next_obj = next;
-
-          if( next == NULL ) {
-            /* This pool has no more free space. Move it to unswept_full_pools
-              and then advance cur_pool onwards */
-            pool* next_pool = cur_pool->next;
-
-            heap->unswept_avail_pools[sz_class] = next_pool;
-            cur_pool->next = heap->unswept_full_pools[sz_class];
-            heap->unswept_full_pools[sz_class] = cur_pool;
-
-            cur_pool = next_pool;
-
-            CAMLassert( cur_pool->evacuating == 0 );
+          value* new_p = to_pool->next_obj;
+          value *next = (value*)new_p[1];
+          to_pool->next_obj = next;
+          if (!next) {
+            /* to_pool has no more free space. Move it to unswept_full_pools */
+            heap->unswept_avail_pools[sz_class] = to_pool->next;
+            to_pool->next = heap->unswept_full_pools[sz_class];
+            heap->unswept_full_pools[sz_class] = to_pool;
           }
 
           /* Copy the block to the new location */
           memcpy(new_p, p, Whsize_hd(hd) * sizeof(value));
 
-          /* Set first field of p to as a forwarding pointer */
+          /* Set first field of p as a forwarding pointer */
           Field(Val_hp(p), 0) = Val_hp(new_p);
-
-          #ifdef DEBUG
-          for( int w = 1 ; w < Wosize_hd(hd) ; w++ ) {
-            Field(Val_hp(p), w) = Debug_free_major;
-          }
-          #endif
-        } else {
-          #ifdef DEBUG
-          for( int w = 1 ; w < Whsize_hd(hd) ; w++ ) {
-            Field(Val_hp(p), w) = Debug_free_major;
-          }
-          #endif
         }
 
-        p += wh;
+        #ifdef DEBUG
+        /* Clear the whole of the pool slot except the header and
+         * (if forwarded) the forwarding pointer. */
+        mlsize_t w = hd ? 1 : 0;
+        while (w < wh - 1) {
+          Field(Val_hp(p), w) = Debug_free_major;
+          ++ w;
+        }
+        #endif
       }
-
-      evac_pool = evac_pool->next;
+      from_pool = from_pool->next;
     }
-
-    CAMLassert(cur_pool->next_obj != NULL);
   }
 
   caml_global_barrier();
 
-  /* Second phase: at this point all pools have been compacted and the old
-    blocks first fields now point to their new location. We now go through all
-    pools again and for each field we look up the header of the block it points
-    to. If it's a block that would be in the pools (so below a certain size)
-    then we use caml_pool_of_shared_block to find the pool and check if it is
-    evacuating. If it is then we update the field with the pointer in the
-    block's first field */
+  /* Second phase: at this point all pools have been compacted and the
+    first fields of the old blocks now point to their new location. We
+    go through all roots, pools, and large objects, finding pointers
+    to blocks in evacuated pools, and updating them to their forwarded
+    pointers. */
 
   /* First we do roots (locals and finalisers) */
   caml_do_roots(&compact_update_field, 0, NULL, Caml_state, 1);
 
   /* Next, one domain does the global roots */
-  if( participants[0] == Caml_state ) {
+  if (participants[0] == Caml_state) {
     caml_scan_global_roots(&compact_update_field, NULL);
   }
 
   /* Shared heap pools. */
-  for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
-    pool* cur_pool = heap->unswept_avail_pools[sz_class];
+  for (sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
+    mlsize_t wh = wsize_sizeclass[sz_class];
+    pool_t pool = heap->unswept_avail_pools[sz_class];
 
     /* Iterate through pools updating the fields in each live block,
       stop once we reach our first evacuating pool. */
-    while( cur_pool != NULL && cur_pool->evacuating == 0 ) {
-      value* p = (value*)((char*)cur_pool + POOL_HEADER_SZ);
-      value* end = (value*)cur_pool + POOL_WSIZE;
-      mlsize_t wh = wsize_sizeclass[sz_class];
-
-      while (p + wh <= end) {
-        if( *p != 0 ) {
+    while (pool && pool->evacuating == 0) {
+      value* end = POOL_LIMIT(pool);
+      for (value* p = POOL_FIRST(pool); p + wh <= end; p += wh) {
+        if (*p != 0) {
           compact_update_block(p);
         }
-          p += wh;
       }
-
-      cur_pool = cur_pool->next;
+      pool = pool->next;
     }
 
     /* do the same for full pools */
-    cur_pool = heap->unswept_full_pools[sz_class];
+    pool = heap->unswept_full_pools[sz_class];
 
-    while( cur_pool != NULL ) {
-      CAMLassert( cur_pool->evacuating == 0 );
-      value* p = (value*)((char*)cur_pool + POOL_HEADER_SZ);
-      value* end = (value*)cur_pool + POOL_WSIZE;
-      mlsize_t wh = wsize_sizeclass[sz_class];
-
-      while (p + wh <= end) {
-        if( *p != 0 ) {
+    while (pool) {
+      CAMLassert(pool->evacuating == 0);
+      value* end = POOL_LIMIT(pool);
+      for (value* p = POOL_FIRST(pool); p + wh <= end; p += wh) {
+        if (*p != 0) {
           compact_update_block(p);
         }
-          p += wh;
       }
-
-      cur_pool = cur_pool->next;
+      pool = pool->next;
     }
   }
 
@@ -1165,180 +1101,130 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
 
   /* Ephemerons */
   struct caml_ephe_info* ephe_info = Caml_state->ephe_info;
-
-  if( ephe_info->todo ) {
-    compact_update_field(NULL, ephe_info->todo, &ephe_info->todo);
-    compact_update_ephe_list(ephe_info->todo);
-  }
-
-  if( ephe_info->live ) {
-    compact_update_field(NULL, ephe_info->live, &ephe_info->live);
-    compact_update_ephe_list(ephe_info->live);
-  }
+  compact_update_ephe(&ephe_info->todo);
+  compact_update_ephe(&ephe_info->live);
 
   caml_global_barrier();
 
   /* DEBUG phase */
 
-  if(getenv("DEBUG_COMPACT") != NULL) {
-    const uintnat MAX_BUFFER_SIZE = 4096*1024;
+  if (getenv("DEBUG_COMPACT") != NULL) {
     int found_evac_pointer = 0;
-    uintnat* buffer = (uintnat*)malloc(MAX_BUFFER_SIZE * sizeof(uintnat));
 
     /* for each size class, for each evacuated pool zero contents */
-    for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
-      pool* cur_pool = heap->unswept_avail_pools[sz_class];
+    for (sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
+      pool_t pool = heap->unswept_avail_pools[sz_class];
 
-      while( cur_pool != NULL ) {
-        if( cur_pool->evacuating == 1 ) {
-          value* p = (value*)((char*)cur_pool + POOL_HEADER_SZ);
+      while (pool != NULL) {
+        if (pool->evacuating == 1) {
+          value* p = POOL_FIRST(pool);
           memset(p, 0, (POOL_WSIZE - POOL_HEADER_WSIZE) * sizeof(value));
         }
-
-        cur_pool = cur_pool->next;
+        pool = pool->next;
       }
     }
 
     caml_global_barrier();
 
-    for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
-      uintnat min_evac = UINTNAT_MAX;
-      uintnat max_evac = 0;
+    for (sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
+      pool_t min_pool = 0, max_pool = 0;
 
-      pool* test_pool = heap->unswept_avail_pools[sz_class];
-      int found_evac = 0;
+      /* find the least and greatest address of pools of this size class */
+      pool_t pool = heap->unswept_avail_pools[sz_class], evac_pool = NULL;
 
-      if( test_pool != NULL ) {
-        while( test_pool != NULL ) {
-          if( test_pool->evacuating == 1 ) {
-            found_evac = 1;
-            if( (uintnat)test_pool < min_evac ) {
-              min_evac = (uintnat)test_pool;
+      if (!pool) continue;
+
+      while (pool != NULL) {
+        if (pool->evacuating == 1) {
+          if (!evac_pool) {
+            min_pool = max_pool = evac_pool = pool;
+          } else {
+            if (pool < min_pool) {
+              min_pool = pool;
             }
-
-            if( (uintnat)test_pool > max_evac ) {
-              max_evac = (uintnat)test_pool;
+            if (pool > max_pool) {
+              max_pool = pool;
             }
           }
-
-          test_pool = test_pool->next;
         }
+        pool = pool->next;
+      }
 
-        if( !found_evac ) {
-          continue;
-        }
+      if (!evac_pool) { /* no evacuated pools of this size */
+        continue;
+      }
+      value min_block = (value)POOL_FIRST(min_pool);
+      value max_block = (value)POOL_LIMIT(max_pool);
 
-        // printf("min_evac: %lx, max_evac: %lx\n", min_evac, max_evac);
+      /* iterate through all memory mappings */
+      FILE *maps_fp = fopen("/proc/self/maps", "r");
+      if (!maps_fp) {
+        perror("fopen maps");
+        exit(EXIT_FAILURE);
+      }
 
-        {
-          FILE *maps_fp = fopen("/proc/self/maps", "r"); // open /proc/self/maps for reading
-          if (maps_fp == NULL) {
-            perror("fopen maps");
-            exit(EXIT_FAILURE);
-          }
-
-          FILE *mem_fp = fopen("/proc/self/mem", "r"); // open /proc/self/mem for reading
-          if (mem_fp == NULL) {
-            perror("fopen mem");
-            exit(EXIT_FAILURE);
-          }
-
-          char line[256]; // buffer for storing each line
-          uintnat start_bytes, end_bytes; // variables for storing start and end addresses
-
-          while (fgets(line, sizeof(line), maps_fp) != NULL) { // read each line until EOF
-            sscanf(line, "%lx-%lx", &start_bytes, &end_bytes); // scan the line for start and end addresses in hexadecimal format
-            if (strchr(line + 18, 'r') != NULL && strchr(line + 49 , '/') == NULL) { // check if the region has read permission and is not mapped from a file or device
-              uintnat i = start_bytes;
-
-              while(i < end_bytes) {
-                uintnat buffer_len_words = (end_bytes - i) / sizeof(uintnat);
-
-                if( buffer_len_words > MAX_BUFFER_SIZE ) {
-                  buffer_len_words = MAX_BUFFER_SIZE;
+      char line[256];
+      while (fgets(line, sizeof(line), maps_fp)) {
+        uintnat start_read, end_read;
+        char read_c, write_c;
+        sscanf(line, "%lx-%lx %c%c", &start_read, &end_read, &read_c, &write_c);
+        if (read_c == 'r' && write_c == 'w') { /* memory mapping is readable and writable */
+          value *start = (value *)start_read, *end = (value *)end_read;
+          for (value *p = start; p < end; ++p) {
+            value val = *p;
+            if (Is_block(val) && val >= min_block && val < max_block) {
+              // val points to the right part of address space; check if it is evacuated
+              pool = evac_pool;
+              while (pool != NULL) {
+                if (((value)POOL_FIRST(pool)) <= val && val < ((value)POOL_LIMIT(pool))) {
+                  found_evac_pointer = 1;
+                  printf("Found pointer %p to evacuated pool at address %p in %p-%p (pool %p-%p, class %d(%d))\n",
+                         (void*)val, p, start, end, POOL_FIRST(pool), POOL_LIMIT(pool), pool->sz, wsize_sizeclass[pool->sz]);
                 }
-
-                pread(fileno(mem_fp), buffer, buffer_len_words * sizeof(uintnat), i); // read the region into the buffer
-
-                for( int j = 0; j < buffer_len_words ; j++ ) {
-                  uintnat value = buffer[j];
-
-                  if(value > (uintnat)buffer && value < (uintnat)buffer + MAX_BUFFER_SIZE) {
-                    continue; // Don't check pointers to the buffer
-                  }
-
-                  if (value >= min_evac && value <= max_evac) {
-                    // check if value is inside one of the evacuated pools
-                    pool* test_pool = heap->unswept_avail_pools[sz_class];
-
-                    while( test_pool != NULL ) {
-                      if( test_pool->evacuating == 1 ) {
-                        if( ((uintnat)test_pool + POOL_HEADER_WSIZE) <= value && value < (uintnat)test_pool + POOL_WSIZE ) {
-                          found_evac_pointer = 1;
-                          printf("Found pointer to evacuated pool at address 0x%lx (value: %lx) in %lx-%lx (pool start: %lx, pool end: %lx)\n", (i + j * sizeof(uintnat)), value, start_bytes, end_bytes, (uintnat)test_pool + POOL_HEADER_WSIZE, (uintnat)test_pool + POOL_WSIZE);
-                        }
-                      }
-
-                      test_pool = test_pool->next;
-                    }
-                  }
-                }
-
-                i += buffer_len_words * sizeof(uintnat);
+                pool = pool->next;
               }
             }
           }
         }
       }
+      fclose(maps_fp);
     }
-
-    free(buffer);
-
-    if( found_evac_pointer == 1 ) {
-      /* print buffer start and end addresses */
-      printf("Buffer start: %lx, Buffer end: %lx\n", (uintnat)buffer, (uintnat)buffer + MAX_BUFFER_SIZE);
+    if (found_evac_pointer) {
+      abort();
     }
 
     caml_global_barrier();
   }
 
-  /* Third phase: each evacuating page needs to have it's flag reset and
-      be moved to the free list. Unfortunately this means a lot of
-      contention on the pool freelist lock. */
+  /* Third phase: move each evacuated pool to the free list and reset its flag.
+     Unfortunately this means a lot of contention on the pool freelist lock. */
 
   for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
-    pool* cur_pool = heap->unswept_avail_pools[sz_class];
-    pool* last_pool = NULL;
+    pool_t pool = heap->unswept_avail_pools[sz_class];
+    pool_t last = NULL;
 
-    while( cur_pool != NULL ) {
-      if( cur_pool->evacuating ) {
-        /* Reset the evacuating flag */
-        cur_pool->evacuating = 0;
+    while (pool) {
+      pool_t next = pool->next;
+      if (pool->evacuating) {
+        pool->evacuating = 0;
 
-        /* make sure the last pool that wasn't evacuating doesn't point
-           to now empty pools that are freed */
-        if( last_pool != NULL ) {
-          last_pool->next = NULL;
+        if (last) { /* clear next pointer of last non-evacuated pool */
+          last->next = NULL;
         }
-
-        pool* next_pool = cur_pool->next;
 
         #ifdef DEBUG
         for(int p = POOL_HEADER_WSIZE; p < POOL_WSIZE; p++) {
-          *((value*)cur_pool + p) = Debug_free_major;
+          *((value*)pool + p) = Debug_free_major;
         }
         #endif
 
-        pool_release(heap, cur_pool, sz_class);
+        pool_release(heap, pool, sz_class);
 
-        last_pool = NULL;
-        cur_pool = next_pool;
+        last = NULL;
+      } else {
+        last = pool;
       }
-      else
-      {
-        last_pool = cur_pool;
-        cur_pool = cur_pool->next;
-      }
+      pool = next;
     }
   }
 
@@ -1346,7 +1232,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
 
   /* Fourth and final phase: clean up the pools we released */
   barrier_status b = caml_global_barrier_begin();
-  if( caml_global_barrier_is_final(b) ) {
+  if (caml_global_barrier_is_final(b)) {
     free_pool_freelist();
   }
   caml_global_barrier_end(b);
@@ -1368,7 +1254,7 @@ struct mem_stats {
   uintnat live_blocks;
 };
 
-static void verify_pool(pool* a, sizeclass sz, struct mem_stats* s) {
+static void verify_pool(pool_t a, sizeclass sz, struct mem_stats* s) {
   value* v;
   for (v = a->next_obj; v; v = (value*)v[1]) {
     CAMLassert(*v == 0);
@@ -1415,7 +1301,7 @@ static void verify_swept (struct caml_heap_state* local) {
   /* sweeping should be done by this point */
   CAMLassert(local->next_to_sweep == NUM_SIZECLASSES);
   for (i = 0; i < NUM_SIZECLASSES; i++) {
-    pool* p;
+    pool_t p;
     CAMLassert(local->unswept_avail_pools[i] == NULL &&
                local->unswept_full_pools[i] == NULL);
     for (p = local->avail_pools[i]; p; p = p->next)
