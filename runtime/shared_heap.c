@@ -174,7 +174,7 @@ void caml_teardown_shared_heap(struct caml_heap_state* heap) {
 
 #define POOLS_PER_ALLOCATION 1
 static pool* pool_acquire(struct caml_heap_state* local) {
-  pool* r;
+  pool* r = NULL;
 
   void* mem = caml_mem_map(Bsize_wsize(POOL_WSIZE) * POOLS_PER_ALLOCATION,
                             Bsize_wsize(POOL_WSIZE), 0 /* allocate */);
