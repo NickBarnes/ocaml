@@ -499,7 +499,7 @@ static intnat pool_sweep(struct caml_heap_state* local, pool** plist,
         {
           int i;
           mlsize_t wo = Wosize_whsize(wh);
-          for (i = 2; i < wo; i++) {
+          for (i = 1; i < wo; i++) {
             Field(Val_hp(p), i) = Debug_free_major;
           }
         }
@@ -862,12 +862,12 @@ static void compact_update_block(value* p) {
   header_t hd = Hd_hp(p);
   tag_t tag = Tag_hd(hd);
 
-  if( hd != 0 ) {
+  if( hd != 0 ) { // unnecessary
     mlsize_t wosz = Wosize_hd(hd);
     mlsize_t i;
     uintnat offset = 0;
 
-    if( tag == Infix_tag ) {
+    if( tag == Infix_tag ) { // also unnecessary
       p -= Infix_offset_val(Val_hp(p));
       tag = Tag_hp(p);
       wosz = Wosize_hp(p);
@@ -993,16 +993,6 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
 
       cur_pool = cur_pool->next;
     }
-
-    /* Allocate enough new pools at the front so _everything_ is moved */
-    /*int blocks_per_pool = ((POOL_WSIZE - POOL_HEADER_SZ) / wsize_sizeclass[sz_class]);
-    int new_pools = (live_blocks + blocks_per_pool - 1) / blocks_per_pool;
-    for( int i = 0; i < new_pools; i++ ) {
-      pool* new_pool = pool_acquire(heap);
-      new_pool->next = heap->unswept_avail_pools[sz_class];
-      heap->unswept_avail_pools[sz_class] = new_pool;
-      pool_initialize(new_pool, sz_class, Caml_state);
-    }*/
 
     /* cur_pool is now the pool we're allocating in to */
     cur_pool = heap->unswept_avail_pools[sz_class];
@@ -1179,13 +1169,13 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   caml_global_barrier();
 
   /* DEBUG phase */
-
+/*
   if(getenv("DEBUG_COMPACT") != NULL) {
     const uintnat MAX_BUFFER_SIZE = 4096*1024;
     int found_evac_pointer = 0;
     uintnat* buffer = (uintnat*)malloc(MAX_BUFFER_SIZE * sizeof(uintnat));
 
-    /* for each size class, for each evacuated pool zero contents */
+    // for each size class, for each evacuated pool zero contents
     for(sz_class = 1; sz_class < NUM_SIZECLASSES; sz_class++) {
       pool* cur_pool = heap->unswept_avail_pools[sz_class];
 
@@ -1295,12 +1285,12 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
     free(buffer);
 
     if( found_evac_pointer == 1 ) {
-      /* print buffer start and end addresses */
+      // print buffer start and end addresses
       printf("Buffer start: %lx, Buffer end: %lx\n", (uintnat)buffer, (uintnat)buffer + MAX_BUFFER_SIZE);
     }
 
     caml_global_barrier();
-  }
+  }*/
 
   /* Third phase: each evacuating page needs to have it's flag reset and
       be moved to the free list. Unfortunately this means a lot of
