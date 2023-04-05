@@ -806,7 +806,7 @@ void caml_empty_minor_heaps_once (void)
   } while (saved_minor_cycle == atomic_load(&caml_minor_cycles_started));
 
   if(getenv("DEBUG_COMPACT") != NULL) {
-    caml_shared_compact();
+    caml_finish_major_cycle(1 /* force compaction */);
   }
 }
 

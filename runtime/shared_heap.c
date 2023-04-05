@@ -914,24 +914,10 @@ static void compact_update_ephe_list(value ephe_list) {
 }
 
 /* Heap compaction */
-static void compact_heap(caml_domain_state* domain_state, void* data,
+void caml_compact_heap(caml_domain_state* domain_state, void* data,
                          int participating_count,
                          caml_domain_state** participants) {
-  uintnat saved_cycles = caml_major_cycles_completed;
-  uintnat cycles;
-
-  int log_compact = getenv("LOG_COMPACT") != NULL;
-
-  /* Do three cycles so we know we have no garbage in the heap */
-  for( cycles = saved_cycles; cycles < saved_cycles+3 ; cycles++ ) {
-    caml_finish_major_cycle_from_stw(cycles, domain_state, participating_count,
-      participants);
-  }
-
-  /* Have everyone clear their stacks by marking the heap, this means we don't
-     need to deal with things the mark stack points to moving. It also just
-     brings work forward from the next major slice. */
-  caml_empty_mark_stack();
+  /* TODO: List preconditions here and assert all of them */
 
   /* High level overview of the compaction algorithm:
     In parallel each domain goes through several (numbered) phases separated by
@@ -1040,10 +1026,6 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
         header_t hd = (header_t)atomic_load_relaxed((atomic_uintnat*)p);
 
         if( hd != 0 && Has_status_hd(hd, caml_global_heap_state.MARKED) ) {
-          if( log_compact ) {
-            printf("promoting %p\n", p);
-          }
-
           /* live block in an evacuating pool, now we allocate it in to cur_pool */
           value* new_p = cur_pool->next_obj;
           next = (value*)new_p[1];
@@ -1216,10 +1198,6 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
     free_pool_freelist();
   }
   caml_global_barrier_end(b);
-}
-
-void caml_shared_compact(void) {
-  caml_try_run_on_all_domains(&compact_heap, NULL, NULL);
 }
 
 /* Compaction end */

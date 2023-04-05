@@ -238,12 +238,12 @@ CAMLprim value caml_gc_minor(value v)
   return caml_raise_if_exception(exn);
 }
 
-static value gc_major_exn(void)
+static value gc_major_exn(int force_compaction)
 {
   CAML_EV_BEGIN(EV_EXPLICIT_GC_MAJOR);
   caml_gc_log ("Major GC cycle requested");
   caml_empty_minor_heaps_once();
-  caml_finish_major_cycle();
+  caml_finish_major_cycle(force_compaction);
   value exn = caml_process_pending_actions_exn();
   CAML_EV_END(EV_EXPLICIT_GC_MAJOR);
   return exn;
@@ -253,7 +253,7 @@ CAMLprim value caml_gc_major(value v)
 {
   Caml_check_caml_state();
   CAMLassert (v == Val_unit);
-  return caml_raise_if_exception(gc_major_exn());
+  return caml_raise_if_exception(gc_major_exn(0));
 }
 
 static value gc_full_major_exn(void)
@@ -266,7 +266,7 @@ static value gc_full_major_exn(void)
      currently-unreachable object to be collected. */
   for (i = 0; i < 3; i++) {
     caml_empty_minor_heaps_once();
-    caml_finish_major_cycle();
+    caml_finish_major_cycle(0);
     exn = caml_process_pending_actions_exn();
     if (Is_exception_result(exn)) break;
   }
@@ -298,8 +298,7 @@ CAMLprim value caml_gc_compaction(value v)
   value exn = Val_unit;
   CAML_EV_BEGIN(EV_EXPLICIT_GC_COMPACT);
   CAMLassert (v == Val_unit);
-  caml_shared_compact();
-  ++ Caml_state->stat_forced_major_collections;
+  caml_raise_if_exception(gc_major_exn(1));
   CAML_EV_END(EV_EXPLICIT_GC_COMPACT);
   return exn;
 }
