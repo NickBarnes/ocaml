@@ -1025,7 +1025,7 @@ void caml_compact_heap(caml_domain_state* domain_state, void* data,
       while (p + wh <= end) {
         header_t hd = (header_t)atomic_load_relaxed((atomic_uintnat*)p);
 
-        if( hd != 0 && Has_status_hd(hd, caml_global_heap_state.MARKED) ) {
+        if( hd != 0 && Has_status_hd(hd, caml_global_heap_state.UNMARKED) ) {
           /* live block in an evacuating pool, now we allocate it in to cur_pool */
           value* new_p = cur_pool->next_obj;
           next = (value*)new_p[1];
@@ -1097,7 +1097,7 @@ void caml_compact_heap(caml_domain_state* domain_state, void* data,
       mlsize_t wh = wsize_sizeclass[sz_class];
 
       while (p + wh <= end) {
-        if( *p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.MARKED) ) {
+        if( *p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.UNMARKED) ) {
           compact_update_block(p);
         }
           p += wh;
@@ -1116,7 +1116,7 @@ void caml_compact_heap(caml_domain_state* domain_state, void* data,
       mlsize_t wh = wsize_sizeclass[sz_class];
 
       while (p + wh <= end) {
-        if( *p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.MARKED)) {
+        if( *p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.UNMARKED)) {
           compact_update_block(p);
         }
           p += wh;
@@ -1132,7 +1132,9 @@ void caml_compact_heap(caml_domain_state* domain_state, void* data,
   for( large_alloc* la = heap->unswept_large;
         la != NULL; la = la->next ) {
     value* p = (value*)((char*)la + LARGE_ALLOC_HEADER_SZ);
-    compact_update_block(p);
+    if( Has_status_val(Val_hp(p), caml_global_heap_state.UNMARKED) ) {
+      compact_update_block(p);
+    }
   }
 
   /* Ephemerons */
