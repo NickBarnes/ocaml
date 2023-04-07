@@ -897,24 +897,10 @@ static void compact_update_ephe_list(value *ephe_p)
 }
 
 /* Heap compaction */
-static void compact_heap(caml_domain_state* domain_state, void* data,
+void caml_compact_heap(caml_domain_state* domain_state, void* data,
                          int participating_count,
                          caml_domain_state** participants) {
-  uintnat saved_cycles = caml_major_cycles_completed;
-  uintnat cycles;
-
-  int log_compact = getenv("LOG_COMPACT") != NULL;
-
-  /* Do three cycles so we know we have no garbage in the heap */
-  for( cycles = saved_cycles; cycles < saved_cycles+3 ; cycles++ ) {
-    caml_finish_major_cycle_from_stw(cycles, domain_state, participating_count,
-      participants);
-  }
-
-  /* Have everyone clear their stacks by marking the heap, this means we don't
-     need to deal with things the mark stack points to moving. It also just
-     brings work forward from the next major slice. */
-  caml_empty_mark_stack();
+  /* TODO: List preconditions here and assert all of them */
 
   /* High level overview of the compaction algorithm:
     In parallel each domain goes through several (numbered) phases separated by
@@ -986,9 +972,6 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
       for (value* p = POOL_BASE(cur_pool); p + wh <= end; p += wh) {
         header_t hd = Hd_hp(p);
         if (hd && Has_status_hd(hd, caml_global_heap_state.MARKED)) {
-          if (log_compact) {
-            printf("evacuating %p\n", p);
-          }
 
           pool *to_pool = heap->unswept_avail_pools[sz_class];
           CAMLassert(to_pool->evacuating == 0);
@@ -1048,7 +1031,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
       mlsize_t wh = wsize_sizeclass[sz_class];
 
       for (value* p = POOL_BASE(cur_pool); p + wh <= end; p += wh) {
-        if(*p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.MARKED)) {
+        if(*p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.UNMARKED)) {
           compact_update_block(p);
         }
       }
@@ -1064,7 +1047,7 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
       mlsize_t wh = wsize_sizeclass[sz_class];
 
       for (value* p = POOL_BASE(cur_pool); p + wh <= end; p += wh) {
-        if(*p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.MARKED)) {
+        if(*p != 0 && Has_status_val(Val_hp(p), caml_global_heap_state.UNMARKED)) {
           compact_update_block(p);
         }
       }
@@ -1078,7 +1061,9 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
   for (large_alloc* la = heap->unswept_large;
        la != NULL; la = la->next) {
     value* p = (value*)((char*)la + LARGE_ALLOC_HEADER_SZ);
-    compact_update_block(p);
+    if( Has_status_val(Val_hp(p), caml_global_heap_state.UNMARKED) ) {
+      compact_update_block(p);
+    }
   }
 
   /* Ephemerons */
@@ -1130,10 +1115,6 @@ static void compact_heap(caml_domain_state* domain_state, void* data,
     free_pool_freelist();
   }
   caml_global_barrier_end(b);
-}
-
-void caml_shared_compact(void) {
-  caml_try_run_on_all_domains(&compact_heap, NULL, NULL);
 }
 
 /* Compaction end */

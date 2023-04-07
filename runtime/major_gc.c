@@ -1169,12 +1169,16 @@ static intnat ephe_sweep (caml_domain_state* domain_state, intnat budget)
   return budget;
 }
 
+struct cycle_callback_params {
+  int force_compaction;
+};
 
-static void cycle_all_domains_callback(caml_domain_state* domain, void* unused,
+static void cycle_all_domains_callback(caml_domain_state* domain, void* args,
                                        int participating_count,
                                        caml_domain_state** participating)
 {
   uintnat num_domains_in_stw;
+  struct cycle_callback_params* params = (struct cycle_callback_params*)args;
 
   CAML_EV_BEGIN(EV_MAJOR_GC_CYCLE_DOMAINS);
 
@@ -1292,6 +1296,12 @@ static void cycle_all_domains_callback(caml_domain_state* domain, void* unused,
   }
 
   caml_cycle_heap(domain->shared_heap);
+
+  /* Compact here if requested (or, eventually, if the heap overhead is too
+      high). */
+  if( params->force_compaction ) {
+    caml_compact_heap(domain, NULL, participating_count, participating);
+  }
 
   /* Collect domain-local stats to emit to runtime events */
   struct heap_stats local_stats;
@@ -1468,7 +1478,8 @@ static intnat major_collection_slice(intnat howmuch,
                                      int participant_count,
                                      caml_domain_state** barrier_participants,
                                      collection_slice_mode mode,
-                                     int major_cycle_spinning)
+                                     int major_cycle_spinning,
+                                     int force_compaction)
 {
   caml_domain_state* domain_state = Caml_state;
   intnat sweep_work = 0, mark_work = 0;
@@ -1662,13 +1673,15 @@ mark_again:
       cycle simultaneously, we loop until the current cycle has ended,
       ignoring whether caml_try_run_on_all_domains succeeds. */
 
+    struct cycle_callback_params params;
+    params.force_compaction = force_compaction;
 
     while (saved_major_cycle == caml_major_cycles_completed) {
       if (barrier_participants) {
         cycle_all_domains_callback
-              (domain_state, (void*)0, participant_count, barrier_participants);
+              (domain_state, (void*)&params, participant_count, barrier_participants);
       } else {
-        caml_try_run_on_all_domains(&cycle_all_domains_callback, 0, 0);
+        caml_try_run_on_all_domains(&cycle_all_domains_callback, (void*)&params, 0);
       }
     }
   }
@@ -1678,7 +1691,7 @@ mark_again:
 
 void caml_opportunistic_major_collection_slice(intnat howmuch)
 {
-  major_collection_slice(howmuch, 0, 0, Slice_opportunistic, 0);
+  major_collection_slice(howmuch, 0, 0, Slice_opportunistic, 0, 0);
 }
 
 void caml_major_collection_slice(intnat howmuch)
@@ -1692,6 +1705,7 @@ void caml_major_collection_slice(intnat howmuch)
         0,
         0,
         Slice_interruptible,
+        0,
         0
         );
     if (interrupted_work > 0) {
@@ -1701,47 +1715,47 @@ void caml_major_collection_slice(intnat howmuch)
   } else {
     /* TODO: could make forced API slices interruptible, but would need to do
        accounting or pass up interrupt */
-    major_collection_slice(howmuch, 0, 0, Slice_uninterruptible, 0);
+    major_collection_slice(howmuch, 0, 0, Slice_uninterruptible, 0, 0);
   }
   /* Record that this domain has completed a major slice for this minor cycle.
    */
   Caml_state->major_slice_epoch = major_slice_epoch;
 }
 
+struct finish_major_cycle_params {
+  uintnat saved_major_cycles;
+  int force_compaction;
+};
+
 static void finish_major_cycle_callback (caml_domain_state* domain, void* arg,
                                          int participating_count,
                                          caml_domain_state** participating)
 {
-  uintnat saved_major_cycles = (uintnat)arg;
+  struct finish_major_cycle_params* params = (struct finish_major_cycle_params*)arg;
   CAMLassert (domain == Caml_state);
 
   caml_empty_minor_heap_no_major_slice_from_stw
     (domain, (void*)0, participating_count, participating);
 
   CAML_EV_BEGIN(EV_MAJOR_FINISH_CYCLE);
-  while (saved_major_cycles == caml_major_cycles_completed) {
+  while (params->saved_major_cycles == caml_major_cycles_completed) {
     major_collection_slice(10000000, participating_count, participating,
-                           Slice_uninterruptible, 1);
+                           Slice_uninterruptible, 1, params->force_compaction);
   }
   CAML_EV_END(EV_MAJOR_FINISH_CYCLE);
 }
 
-void caml_finish_major_cycle_from_stw (uintnat saved_major_cycles,
-                                        caml_domain_state* domain,
-                                         int participating_count,
-                                         caml_domain_state** participating)
-{
-  finish_major_cycle_callback(domain, (void*)saved_major_cycles,
-    participating_count, participating);
-}
-
-void caml_finish_major_cycle (void)
+void caml_finish_major_cycle (int force_compaction)
 {
   uintnat saved_major_cycles = caml_major_cycles_completed;
 
   while( saved_major_cycles == caml_major_cycles_completed ) {
+    struct finish_major_cycle_params params;
+    params.force_compaction = force_compaction;
+    params.saved_major_cycles = caml_major_cycles_completed;
+
     caml_try_run_on_all_domains
-    (&finish_major_cycle_callback, (void*)caml_major_cycles_completed, 0);
+    (&finish_major_cycle_callback, (void*)&params, 0);
   }
 }
 
