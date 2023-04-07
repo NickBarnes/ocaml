@@ -502,10 +502,14 @@ let link_bytecode_as_c tolink outfile with_main =
          (Marshal.to_string (Symtable.initial_global_table()) []);
        output_string outchan "\n};\n\n";
        (* The sections *)
-       let sections =
-         [ Bytesections.Name.SYMB, Symtable.data_global_map();
-           Bytesections.Name.PRIM, Obj.repr(Symtable.data_primitive_names());
-           Bytesections.Name.CRCS, Obj.repr(extract_crc_interfaces()) ] in
+       let sections : (string * Obj.t) list =
+         [ Bytesections.Name.to_string SYMB,
+           Symtable.data_global_map();
+           Bytesections.Name.to_string PRIM,
+           Obj.repr(Symtable.data_primitive_names());
+           Bytesections.Name.to_string CRCS,
+           Obj.repr(extract_crc_interfaces()) ]
+       in
        output_string outchan "static char caml_sections[] = {\n";
        output_data_string outchan
          (Marshal.to_string sections []);
@@ -627,11 +631,8 @@ let link objfiles output_name =
     | _                  -> "stdlib.cma" :: objfiles @ ["std_exit.cmo"]
   in
   let tolink = List.fold_right scan_file objfiles [] in
-  let missing_modules =
-    Ident.Map.filter (fun id _ -> not (Ident.is_predef id)) !missing_globals
-  in
   begin
-    match Ident.Map.bindings missing_modules with
+    match Ident.Map.bindings !missing_globals with
     | [] -> ()
     | (id, cu_name) :: _ ->
         if DepSet.is_empty !badly_ordered_dependencies

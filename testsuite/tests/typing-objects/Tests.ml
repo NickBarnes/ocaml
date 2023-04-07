@@ -185,7 +185,8 @@ Lines 1-3, characters 0-3:
 Error: The type of this class,
        class ['a] c :
          unit -> object constraint 'a = '_weak1 list ref method f : 'a end,
-       contains type variables that cannot be generalized
+       contains the non-generalizable type variable(s): '_weak1.
+       (see manual section 6.1.2)
 |}];;
 
 (* Abbreviations *)
@@ -950,7 +951,7 @@ end;;
 Line 2, characters 13-58:
 2 |   method o = object(_ : 'self) method o = assert false end
                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Error: Cannot close type of object literal: < o : '_weak3; _.. >
+Error: Cannot close type of object literal: < o : '_weak4; .. > as '_weak3
        it has been unified with the self type of a class that is not yet
        completely defined.
 |}];;
