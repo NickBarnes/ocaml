@@ -805,9 +805,9 @@ void caml_empty_minor_heaps_once (void)
     caml_try_stw_empty_minor_heap_on_all_domains();
   } while (saved_minor_cycle == atomic_load(&caml_minor_cycles_started));
 
-  if(getenv("DEBUG_COMPACT") != NULL) {
-    caml_finish_major_cycle(1 /* force compaction */);
-  }
+  /*if(getenv("DEBUG_COMPACT") != NULL) {
+    caml_finish_major_cycle(1);
+  }*/
 }
 
 /* Called by minor allocations when [Caml_state->young_ptr] reaches

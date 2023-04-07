@@ -1299,7 +1299,7 @@ static void cycle_all_domains_callback(caml_domain_state* domain, void* args,
 
   /* Compact here if requested (or, eventually, if the heap overhead is too
       high). */
-  if( params->force_compaction ) {
+  if( params->force_compaction || getenv("DEBUG_COMPACT") != NULL) {
     caml_compact_heap(domain, NULL, participating_count, participating);
   }
 
