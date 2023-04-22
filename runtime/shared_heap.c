@@ -51,7 +51,7 @@ typedef struct pool {
   value* next_obj;
   caml_domain_state* owner;
   sizeclass sz;
-  int evacuating;
+  uintnat evacuating;
 } pool;
 CAML_STATIC_ASSERT(sizeof(pool) == Bsize_wsize(POOL_HEADER_WSIZE));
 #define POOL_HEADER_SZ sizeof(pool)
