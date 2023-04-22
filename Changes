@@ -4,6 +4,10 @@ Working version
 ### Language features:
 
 ### Runtime system:
+- #12193: Re-introduce GC compaction for shared pools
+  Adds a compaction algorithm for the shared pools in the major heap. Explicit
+  only for now, on calls to `Gc.compact`.
+  (Sadiq Jaffer, Nick Barnes, review by ??)
 
 ### Code generation and optimizations:
 
