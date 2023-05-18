@@ -1370,7 +1370,7 @@ static void cycle_all_domains_callback(caml_domain_state* domain, void* args,
   /* Compact here if requested (or, eventually, if the heap overhead is too
       high). */
   if (params->force_compaction) {
-    caml_compact_heap(domain, NULL, participating_count, participating);
+    caml_compact_heap(domain, participating_count, participating);
   }
 
   /* Collect domain-local stats to emit to runtime events */
