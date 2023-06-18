@@ -55,8 +55,8 @@ typedef struct pool {
 CAML_STATIC_ASSERT(sizeof(pool) == Bsize_wsize(POOL_HEADER_WSIZE));
 
 #define POOL_SLAB_WOFFSET(sz) (POOL_HEADER_WSIZE + wastage_sizeclass[sz])
-#define POOL_FIRST_BLOCK(p, sz) ((value*)(p) + POOL_SLAB_WOFFSET(sz))
-#define POOL_END(p) ((value*)(p) + POOL_WSIZE)
+#define POOL_FIRST_BLOCK(p, sz) ((header_t*)(p) + POOL_SLAB_WOFFSET(sz))
+#define POOL_END(p) ((header_t*)(p) + POOL_WSIZE)
 #define POOL_BLOCKS(p) ((POOL_WSIZE - POOL_HEADER_WSIZE) / \
                         wsize_sizeclass[(p)->sz])
 
