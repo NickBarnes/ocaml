@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "caml/addrmap.h"
 #include "caml/custom.h"
@@ -34,8 +35,6 @@
 #include "caml/sizeclasses.h"
 #include "caml/startup_aux.h"
 #include "caml/weak.h"
-
-#include <unistd.h>
 
 typedef unsigned int sizeclass;
 
