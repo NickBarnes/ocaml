@@ -1367,8 +1367,8 @@ static void cycle_all_domains_callback(caml_domain_state* domain, void* args,
 
   caml_cycle_heap(domain->shared_heap);
 
-  /* Compact here if requested (or, eventually, if the heap overhead is too
-      high). */
+  /* Compact here if requested (or, in some future version, if the heap overhead
+      is too high). */
   if (params->force_compaction) {
     caml_compact_heap(domain, participating_count, participating);
   }
