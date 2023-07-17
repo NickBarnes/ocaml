@@ -54,6 +54,7 @@ typedef cpuset_t cpu_set_t;
 #include "caml/intext.h"
 #include "caml/major_gc.h"
 #include "caml/minor_gc.h"
+#include "caml/memprof.h"
 #include "caml/misc.h"
 #include "caml/memory.h"
 #include "caml/osdeps.h"
@@ -297,6 +298,11 @@ Caml_inline void interrupt_domain(struct interruptor* s)
   atomic_store_release(s->interrupt_word, (uintnat)(-1));
 }
 
+Caml_inline dom_internal *internal_of_interruptor(struct interruptor *s)
+{
+  return (dom_internal *)((char *)s - offsetof(dom_internal, interruptor));
+}
+
 int caml_incoming_interrupts_queued(void)
 {
   return atomic_load_acquire(&domain_self->interruptor.interrupt_pending);
@@ -495,7 +501,9 @@ static int allocate_minor_heap(asize_t wsize) {
    * major slice is scheduled. */
   domain_state->young_trigger = domain_state->young_start
          + (domain_state->young_end - domain_state->young_start) / 2;
+  caml_memprof_renew_minor_sample(domain_state);
   caml_reset_young_limit(domain_state);
+
 
   check_minor_heap();
   return 0;
@@ -532,7 +540,9 @@ static uintnat fresh_domain_unique_id(void) {
 }
 
 /* must be run on the domain's thread */
-static void domain_create(uintnat initial_minor_heap_wsize) {
+static void domain_create(uintnat initial_minor_heap_wsize,
+                          caml_domain_state *parent)
+{
   dom_internal* d = 0;
   caml_domain_state* domain_state;
   struct interruptor* s;
@@ -603,6 +613,10 @@ static void domain_create(uintnat initial_minor_heap_wsize) {
   domain_state->dependent_allocated = 0;
 
   domain_state->major_work_done_between_slices = 0;
+
+  /* Tell memprof system about the new domain before either (a) new
+   * domain can allocate anything or (b) parent domain can go away. */
+  caml_memprof_new_domain(parent, domain_state);
 
   /* the minor heap will be initialized by
      [caml_reallocate_minor_heap] below. */
@@ -878,7 +892,7 @@ void caml_init_domains(uintnat minor_heap_wsz) {
     dom->backup_thread_msg = BT_INIT;
   }
 
-  domain_create(minor_heap_wsz);
+  domain_create(minor_heap_wsz, NULL);
   if (!domain_self) caml_fatal_error("Failed to create main domain");
   CAMLassert (domain_self->state->unique_id == 0);
 
@@ -1071,7 +1085,8 @@ static void* domain_thread_func(void* v)
   }
 #endif
 
-  domain_create(caml_params->init_minor_heap_wsz);
+  dom_internal *parent = internal_of_interruptor(p->parent);
+  domain_create(caml_params->init_minor_heap_wsz, parent->state);
   /* this domain is now part of the STW participant set */
   p->newdom = domain_self;
 
@@ -1520,10 +1535,13 @@ void caml_interrupt_self(void) {
 
 void caml_reset_young_limit(caml_domain_state * dom_st)
 {
-  CAMLassert ((uintnat)dom_st->young_ptr > (uintnat)dom_st->young_trigger);
+  /* trigger at the greater of young_trigger and memprof_young_trigger */
+  value *trigger = dom_st->young_trigger > dom_st->memprof_young_trigger ?
+          dom_st->young_trigger : dom_st->memprof_young_trigger;
+  CAMLassert ((uintnat)dom_st->young_ptr > (uintnat)trigger);
   /* An interrupt might have been queued in the meanwhile; this
      achieves the proper synchronisation. */
-  atomic_exchange(&dom_st->young_limit, (uintnat)dom_st->young_trigger);
+  atomic_exchange(&dom_st->young_limit, (uintnat)trigger);
   dom_internal * d = &all_domains[dom_st->id];
   if (atomic_load_relaxed(&d->interruptor.interrupt_pending)
       || dom_st->requested_minor_gc
@@ -1830,6 +1848,12 @@ static void domain_terminate (void)
     }
     caml_plat_unlock(&all_domains_lock);
   }
+
+  /* Delete the domain state from statmemprof after any promotion
+   * (etc) done by this domain: any remaining memprof state will be
+   * handed over to surviving domains. */
+  caml_memprof_delete_domain(domain_state);
+
   /* We can not touch domain_self->interruptor after here
      because it may be reused */
   caml_remove_generational_global_root(&domain_state->dls_root);

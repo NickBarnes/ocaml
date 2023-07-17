@@ -72,6 +72,9 @@ Working version
   (Xavier Leroy, report by Török Edwin, review by Anil Madhavapeddy
   and Nicolás Ojeda Bär)
 
+- #11911, #12382: Restore statmemprof functionality in part
+   (per-thread and per-domain data structures). (Nick Barnes)
+
 ### Code generation and optimizations:
 
 - #11239: on x86-64 and RISC-V, reduce alignment of OCaml stacks from 16 to 8.

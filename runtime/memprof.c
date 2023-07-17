@@ -15,6 +15,276 @@
 
 #define CAML_INTERNALS
 
+#include <stdbool.h>
+#include "caml/memory.h"
+#include "caml/memprof.h"
+
+/* type aliases for the hierarchy of structures for managing memprof status. */
+
+typedef struct memprof_config_s memprof_config_s, *memprof_config_t;
+
+typedef struct memprof_domain_s memprof_domain_s, *memprof_domain_t;
+typedef struct memprof_thread_s memprof_thread_s, *memprof_thread_t;
+
+/* Per-thread memprof state. */
+
+struct memprof_thread_s {
+  /* [suspended] is used for inhibiting memprof callbacks when
+     a callback is running or when an uncaught exception handler is
+     called. */
+  bool suspended;
+
+  /* TODO: More fields to add here */
+
+  /* Per-domain memprof information */
+  memprof_domain_t domain;
+
+  /* Linked list of thread structures for this domain. Could use a
+   * doubly-linked list for performance, but I haven't measured it. */
+  memprof_thread_t next;
+};
+
+/* Memprof configuration. */
+
+struct memprof_config_s {
+  /* Whether memprof has been stopped. */
+  bool _Atomic stopped;
+
+  /* [lambda] is the mean number of samples for each allocated word
+   * (including block headers). Non-negative. Usually a very small value
+   * such as 1e-4 or 1e-5. */
+  double lambda;
+
+  /* Precomputed value of [1/log(1-lambda)], for fast sampling of
+   * geometric distribution. For small lambda this is like [-1/lambda].
+   * Dummy if [lambda = 0]. */
+  float one_log1m_lambda;
+
+  /* [callstack_size] is the maximum number of stack frames to provide
+   * to the tracker callback for each sampled event. */
+  intnat callstack_size;
+
+  /* [tracker] is a tuple of callbacks to call for various events: See
+   * [Gc.Memprof.tracker]. This is a strong GC root. */
+  value tracker;
+};
+
+/* Per-domain memprof state */
+
+struct memprof_domain_s {
+  /* The owning domain */
+  caml_domain_state *caml_state;
+
+  /* Linked list of threads in this domain */
+  memprof_thread_t threads;
+
+  /* The current thread's memprof state. Note that there may not be a
+     "current thread". TODO: maybe this shouldn't be nullable.
+     Nullability costs us some effort and may be meaningless. See call
+     site of caml_memprof_leave_thread() in st_stubs.c. */
+  memprof_thread_t current;
+
+  /* TODO: More fields to add here */
+
+  /* The current profiling configuration for this domain. */
+  memprof_config_s config;
+};
+
+/**** Create and destroy thread state structures ****/
+
+static memprof_thread_t thread_create(memprof_domain_t domain)
+{
+  memprof_thread_t thread = caml_stat_alloc(sizeof(memprof_thread_s));
+  if (!thread) {
+    return NULL;
+  }
+  thread->suspended = false;
+
+  /* attach to domain record */
+  thread->domain = domain;
+  thread->next = domain->threads;
+  domain->threads = thread;
+
+  return thread;
+}
+
+static void thread_destroy(memprof_thread_t thread)
+{
+  memprof_domain_t domain = thread->domain;
+
+  if (domain->current == thread) {
+    domain->current = NULL;
+  }
+  /* remove thread from the per-domain list. Could go faster if we
+   * used a doubly-linked list, but that's premature optimisation
+   * at this point. */
+  memprof_thread_t *p = &domain->threads;
+  while (*p != thread) {
+    p = &(*p)->next;
+  }
+
+  *p = thread->next;
+
+  caml_stat_free(thread);
+}
+
+/**** Create and destroy domain state structures ****/
+
+static void domain_destroy(memprof_domain_t domain)
+{
+  memprof_thread_t thread = domain->threads;
+  while (thread) {
+    memprof_thread_t next = thread->next;
+    thread_destroy(thread);
+    thread = next;
+  }
+
+  caml_stat_free(domain);
+}
+
+static memprof_domain_t domain_create(caml_domain_state *caml_state)
+{
+  memprof_domain_t domain = caml_stat_alloc(sizeof(memprof_domain_s));
+  if (!domain) {
+    return NULL;
+  }
+
+  domain->caml_state = caml_state;
+  domain->threads = NULL;
+  domain->current = NULL;
+  atomic_store(&domain->config.stopped, true);
+  domain->config.lambda = 0.0;
+  domain->config.one_log1m_lambda = 0.0;
+  domain->config.callstack_size = 0;
+  domain->config.tracker = Val_unit;
+
+  /* create initial thread for domain */
+  memprof_thread_t thread = thread_create(domain);
+  if (thread) {
+    domain->current = thread;
+  } else {
+    domain_destroy(domain);
+    domain = NULL;
+  }
+  return domain;
+}
+
+/**** Interface to domain module ***/
+
+void caml_memprof_new_domain(caml_domain_state *parent,
+                             caml_domain_state *child)
+{
+  memprof_domain_t domain = domain_create(child);
+
+  child->memprof = domain;
+  /* if parent domain is profiling, child domain should also be profiling */
+  if (domain && parent && parent->memprof
+      && !atomic_load(&parent->memprof->config.stopped)) {
+    domain->config = parent->memprof->config;
+  }
+}
+
+void caml_memprof_delete_domain(caml_domain_state *domain)
+{
+  if (!domain->memprof) {
+    return;
+  }
+  domain_destroy(domain->memprof);
+  domain->memprof = NULL;
+}
+
+/**** Interface with domain action-pending flag ****/
+
+/* If profiling is active in the current domain, and we may have some
+ * callbacks pending, set the action pending flag. */
+
+static void set_action_pending_as_needed(memprof_domain_t domain)
+{
+  /* if (condition) caml_set_action_pending(domain->caml_state); */
+}
+
+/* Set the suspended flag on `domain` to `s`. */
+
+static void update_suspended(memprof_domain_t domain, bool s)
+{
+  if (domain->current) {
+    domain->current->suspended = s;
+  }
+  caml_memprof_renew_minor_sample(domain->caml_state);
+  if (!s) set_action_pending_as_needed(domain);
+}
+
+/* Set the suspended flag on the current domain to `s`. */
+
+void caml_memprof_update_suspended(bool s) {
+  update_suspended(Caml_state->memprof, s);
+}
+
+/**** Sampling procedures ****/
+
+Caml_inline bool running(memprof_domain_t domain)
+{
+  memprof_thread_t thread = domain->current;
+
+  return (thread
+          && !atomic_load(&domain->config.stopped)
+          && domain->config.lambda > 0
+          && !thread->suspended);
+}
+
+/* Renew the next sample in the minor heap. This needs to be called
+ * after each minor sample and after each minor collection. In
+ * practice, this is called at each minor sample, at each minor
+ * collection, and when sampling is suspended and unsuspended. Extra
+ * calls do not change the statistical properties of the sampling
+ * because of the memorylessness of the geometric distribution. */
+
+void caml_memprof_renew_minor_sample(caml_domain_state *state)
+{
+  memprof_domain_t domain = state->memprof;
+  value *trigger = state->young_start;
+  if (running(domain)) {
+    /* set trigger based on geometric distribution */
+  }
+  CAMLassert((trigger >= state->young_start) &&
+             (trigger < state->young_ptr));
+  state->memprof_young_trigger = trigger;
+  caml_reset_young_limit(state);
+}
+
+/**** Interface with systhread. ****/
+
+CAMLexport memprof_thread_t caml_memprof_new_thread(caml_domain_state *domain)
+{
+  CAMLassert(domain->memprof);
+  return thread_create(domain->memprof);
+}
+
+CAMLexport memprof_thread_t caml_memprof_main_thread(caml_domain_state *domain)
+{
+  memprof_domain_t memprof_domain = domain->memprof;
+  CAMLassert(memprof_domain);
+  memprof_thread_t thread = memprof_domain->threads;
+
+  /* There should currently be just one thread in this domain */
+  CAMLassert(thread);
+  CAMLassert(thread->next == NULL);
+  return thread;
+}
+
+CAMLexport void caml_memprof_delete_thread(memprof_thread_t thread)
+{
+  thread_destroy(thread);
+}
+
+CAMLexport void caml_memprof_enter_thread(memprof_thread_t thread)
+{
+  thread->domain->current = thread;
+  update_suspended(thread->domain, thread->suspended);
+}
+
+/**** Interface to OCaml ****/
+
 #include "caml/fail.h"
 
 CAMLprim value caml_memprof_start(value lv, value szv, value tracker_param)
@@ -571,13 +841,6 @@ static void check_action_pending(void)
     caml_set_action_pending(Caml_state);
 }
 
-void caml_memprof_set_suspended(int s)
-{
-  local->suspended = s;
-  caml_memprof_renew_minor_sample();
-  if (!s) check_action_pending();
-}
-
 /* In case of a thread context switch during a callback, this can be
    called in a reetrant way. */
 value caml_memprof_handle_postponed_exn(void)
@@ -805,29 +1068,6 @@ static void shift_sample(uintnat n)
     caml_memprof_young_trigger -= n;
   else
     caml_memprof_young_trigger = Caml_state->young_alloc_start;
-  caml_reset_young_limit(Caml_state);
-}
-
-/* Renew the next sample in the minor heap. This needs to be called
-   after each minor sampling and after each minor collection. In
-   practice, this is called at each sampling in the minor heap and at
-   each minor collection. Extra calls do not change the statistical
-   properties of the sampling because of the memorylessness of the
-   geometric distribution. */
-void caml_memprof_renew_minor_sample(void)
-{
-  if (lambda == 0 || local->suspended)
-    /* No trigger in the current minor heap. */
-    caml_memprof_young_trigger = Caml_state->young_alloc_start;
-  else {
-    uintnat geom = rand_geom();
-    if (Caml_state->young_ptr - Caml_state->young_alloc_start < geom)
-      /* No trigger in the current minor heap. */
-      caml_memprof_young_trigger = Caml_state->young_alloc_start;
-    else
-      caml_memprof_young_trigger = Caml_state->young_ptr - (geom - 1);
-  }
-
   caml_reset_young_limit(Caml_state);
 }
 
@@ -1069,14 +1309,6 @@ static void empty_entry_array(struct entry_array *ea) {
     ea->t = NULL;
   }
 }
-
-static void th_ctx_memprof_stop(struct caml_memprof_th_ctx* ctx, void* data)
-{
-  (void)data;
-  if (ctx->callback_status != CB_IDLE) ctx->callback_status = CB_STOPPED;
-  empty_entry_array(&ctx->entries);
-}
-
 CAMLprim value caml_memprof_stop(value unit)
 {
   if (!started) caml_failwith("Gc.Memprof.stop: not started.");
@@ -1103,51 +1335,6 @@ CAMLprim value caml_memprof_stop(value unit)
   callstack_buffer_len = 0;
 
   return Val_unit;
-}
-
-/**** Interface with systhread. ****/
-
-static void th_ctx_iter_default(th_ctx_action f, void* data) {
-  f(local, data);
-}
-
-CAMLexport void (*caml_memprof_th_ctx_iter_hook)(th_ctx_action, void*)
-  = th_ctx_iter_default;
-
-CAMLexport struct caml_memprof_th_ctx* caml_memprof_new_th_ctx()
-{
-  struct caml_memprof_th_ctx* ctx =
-    caml_stat_alloc(sizeof(struct caml_memprof_th_ctx));
-  ctx->suspended = 0;
-  ctx->callback_status = CB_IDLE;
-  ctx->entries.t = NULL;
-  ctx->entries.min_alloc_len = MIN_ENTRIES_LOCAL_ALLOC_LEN;
-  ctx->entries.alloc_len = ctx->entries.len = 0;
-  ctx->entries.young_idx = ctx->entries.delete_idx = 0;
-  return ctx;
-}
-
-CAMLexport void caml_memprof_delete_th_ctx(struct caml_memprof_th_ctx* ctx)
-{
-  if (ctx->callback_status >= 0)
-    /* A callback is running in this thread from the global entries
-       array. We delete the corresponding entry. */
-    mark_deleted(&entries_global, ctx->callback_status);
-  if (ctx == local) local = NULL;
-  caml_stat_free(ctx->entries.t);
-  if (ctx != &caml_memprof_main_ctx) caml_stat_free(ctx);
-}
-
-CAMLexport void caml_memprof_leave_thread(void)
-{
-  local = NULL;
-}
-
-CAMLexport void caml_memprof_enter_thread(struct caml_memprof_th_ctx* ctx)
-{
-  CAMLassert(local == NULL);
-  local = ctx;
-  caml_memprof_set_suspended(ctx->suspended);
 }
 
 #endif

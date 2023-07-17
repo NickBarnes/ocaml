@@ -88,6 +88,7 @@ struct caml_thread_struct {
   value * gc_regs;           /* saved value of Caml_state->gc_regs */
   value * gc_regs_buckets;   /* saved value of Caml_state->gc_regs_buckets */
   void * exn_handler;        /* saved value of Caml_state->exn_handler */
+  memprof_thread_t memprof;  /* memprof's internal thread data structure */
 
 #ifndef NATIVE_CODE
   intnat trap_sp_off;      /* saved value of Caml_state->trap_sp_off */
@@ -224,6 +225,7 @@ static void restore_runtime_state(caml_thread_t th)
   Caml_state->trap_barrier_off = th->trap_barrier_off;
   Caml_state->external_raise = th->external_raise;
 #endif
+  caml_memprof_enter_thread(th->memprof);
 }
 
 CAMLprim value caml_thread_cleanup(value unit);
@@ -296,6 +298,7 @@ static caml_thread_t caml_thread_new_info(void)
   th->external_raise = NULL;
 #endif
 
+  th->memprof = caml_memprof_new_thread(domain_state);
   return th;
 }
 
@@ -369,6 +372,7 @@ static void caml_thread_reinitialize(void)
   th = Active_thread->next;
   while (th != Active_thread) {
     next = th->next;
+    caml_memprof_delete_thread(th->memprof);
     caml_thread_free_info(th);
     th = next;
   }
@@ -433,11 +437,12 @@ static void caml_thread_domain_initialize_hook(void)
   new_thread->next = new_thread;
   new_thread->prev = new_thread;
   new_thread->backtrace_last_exn = Val_unit;
+  new_thread->memprof = caml_memprof_main_thread(Caml_state);
 
   st_tls_set(caml_thread_key, new_thread);
 
   Active_thread = new_thread;
-
+  caml_memprof_enter_thread(new_thread->memprof);
 }
 
 CAMLprim value caml_thread_yield(value unit);
@@ -484,7 +489,6 @@ CAMLprim value caml_thread_initialize(value unit)
   caml_domain_external_interrupt_hook = caml_thread_interrupt_hook;
   caml_domain_initialize_hook = caml_thread_domain_initialize_hook;
   caml_domain_stop_hook = caml_thread_domain_stop_hook;
-
   caml_atfork_hook = caml_thread_reinitialize;
 
   return Val_unit;
@@ -513,6 +517,9 @@ static void caml_thread_stop(void)
   /* The main domain thread does not go through [caml_thread_stop]. There is
      always one more thread in the chain at this point in time. */
   CAMLassert(Active_thread->next != Active_thread);
+
+  /* Tell memprof that this thread is terminating */
+  caml_memprof_delete_thread(Active_thread->memprof);
 
   caml_threadstatus_terminate(Terminated(Active_thread->descr));
 
@@ -659,6 +666,7 @@ CAMLexport int caml_c_thread_register(void)
     th->next = th;
     th->prev = th;
     Active_thread = th;
+    caml_memprof_enter_thread(th->memprof);
   } else {
     th->next = Active_thread->next;
     th->prev = Active_thread;
