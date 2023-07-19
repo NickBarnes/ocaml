@@ -594,6 +594,9 @@ void caml_empty_minor_heap_promote(caml_domain_state* domain,
                              domain, 0);
   CAML_EV_END(EV_MINOR_FINALIZERS_OLDIFY);
 
+  CAML_EV_BEGIN(EV_MINOR_LOCAL_ROOTS);
+  CAML_EV_END(EV_MINOR_LOCAL_ROOTS);
+
   CAML_EV_BEGIN(EV_MINOR_REMEMBERED_SET_PROMOTE);
   oldify_mopup (&st, 1); /* ephemerons promoted here */
   CAML_EV_END(EV_MINOR_REMEMBERED_SET_PROMOTE);
@@ -632,6 +635,10 @@ void caml_empty_minor_heap_promote(caml_domain_state* domain,
   CAML_EV_BEGIN(EV_MINOR_LOCAL_ROOTS_PROMOTE);
   oldify_mopup (&st, 0);
   CAML_EV_END(EV_MINOR_LOCAL_ROOTS_PROMOTE);
+
+  CAML_EV_END(EV_MINOR_LOCAL_ROOTS);
+
+  CAML_EV_BEGIN(EV_MINOR_LOCAL_ROOTS);
   CAML_EV_END(EV_MINOR_LOCAL_ROOTS);
 
   domain->young_ptr = domain->young_end;
