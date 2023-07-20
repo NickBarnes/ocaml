@@ -1538,7 +1538,10 @@ void caml_reset_young_limit(caml_domain_state * dom_st)
   /* trigger at the greater of young_trigger and memprof_young_trigger */
   value *trigger = dom_st->young_trigger > dom_st->memprof_young_trigger ?
           dom_st->young_trigger : dom_st->memprof_young_trigger;
-  CAMLassert ((uintnat)dom_st->young_ptr > (uintnat)trigger);
+  CAMLassert ((uintnat)dom_st->young_ptr >
+              (uintnat)dom_st->memprof_young_trigger);
+  CAMLassert ((uintnat)dom_st->young_ptr >
+              (uintnat)dom_st->young_trigger);
   /* An interrupt might have been queued in the meanwhile; this
      achieves the proper synchronisation. */
   atomic_exchange(&dom_st->young_limit, (uintnat)trigger);
