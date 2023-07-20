@@ -1232,21 +1232,21 @@ static intnat ephe_sweep (caml_domain_state* domain_state, intnat budget)
   return budget;
 }
 
+static void memprof_clean_callback(caml_domain_state* domain, void* unused,
+                                   int participating_count,
+                                   caml_domain_state** participating)
+{
+  CAML_EV_BEGIN(EV_MAJOR_MEMPROF_CLEAN);
+  caml_memprof_after_major_gc(domain, domain == participating[0]);
+  CAML_EV_END(EV_MAJOR_MEMPROF_CLEAN);
+
+}
+
 static void cycle_all_domains_callback(caml_domain_state* domain, void* unused,
                                        int participating_count,
                                        caml_domain_state** participating)
 {
   uintnat num_domains_in_stw;
-
-  /* TODO: Not clear this memprof work is really part of the "cycle"
-   * operation. It's more like ephemeron-cleaning really. An earlier
-   * version had a separate callback for this, but resulted in
-   * failures because using caml_try_run_on_all_domains() on it would
-   * mysteriously put all domains back into mark/sweep.
-   */
-  CAML_EV_BEGIN(EV_MAJOR_MEMPROF_CLEAN);
-  caml_memprof_after_major_gc(domain, domain == participating[0]);
-  CAML_EV_END(EV_MAJOR_MEMPROF_CLEAN);
 
   CAML_EV_BEGIN(EV_MAJOR_GC_CYCLE_DOMAINS);
 
@@ -1532,6 +1532,20 @@ static char collection_slice_mode_char(collection_slice_mode mode)
   }
 }
 
+static void run_callback_on_participants(
+        void (*handler)(caml_domain_state*, void*, int, caml_domain_state**),
+        void* data,
+        caml_domain_state* domain_state,
+        int count,
+        caml_domain_state** participants)
+{
+  if (participants) {
+    handler(domain_state, data, count, participants);
+  } else {
+    caml_try_run_on_all_domains(handler, data, 0);
+  }
+}
+
 static void major_collection_slice(intnat howmuch,
                                      int participant_count,
                                      caml_domain_state** barrier_participants,
@@ -1713,14 +1727,9 @@ mark_again:
     if (is_complete_phase_sweep_and_mark_main() ||
         is_complete_phase_mark_final ()) {
       CAMLassert (caml_gc_phase != Phase_sweep_ephe);
-      if (barrier_participants) {
-        try_complete_gc_phase (domain_state,
-                              (void*)0,
-                              participant_count,
-                              barrier_participants);
-      } else {
-        caml_try_run_on_all_domains (&try_complete_gc_phase, 0, 0);
-      }
+      run_callback_on_participants(try_complete_gc_phase, (void*)0,
+                                   domain_state,
+                                   participant_count, barrier_participants);
       if (get_major_slice_work(mode) > 0) goto mark_again;
     }
   }
@@ -1738,19 +1747,23 @@ mark_again:
                                                       - blocks_marked_before));
 
   if (mode != Slice_opportunistic && is_complete_phase_sweep_ephe()) {
+
+   /* Doesn't work because caml_try_run_on_all_domains()
+    * mysteriously puts all domains back into mark/sweep.
+    */
+    run_callback_on_participants(memprof_clean_callback, (void*)0,
+                                 domain_state,
+                                 participant_count, barrier_participants);
+
     saved_major_cycle = caml_major_cycles_completed;
     /* To handle the case where multiple domains try to finish the major
       cycle simultaneously, we loop until the current cycle has ended,
       ignoring whether caml_try_run_on_all_domains succeeds. */
 
-
     while (saved_major_cycle == caml_major_cycles_completed) {
-      if (barrier_participants) {
-        cycle_all_domains_callback
-              (domain_state, (void*)0, participant_count, barrier_participants);
-      } else {
-        caml_try_run_on_all_domains(&cycle_all_domains_callback, 0, 0);
-      }
+      run_callback_on_participants(cycle_all_domains_callback, (void*)0,
+                                   domain_state,
+                                   participant_count, barrier_participants);
     }
   }
 }
