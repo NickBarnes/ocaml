@@ -504,7 +504,6 @@ static int allocate_minor_heap(asize_t wsize) {
   caml_memprof_renew_minor_sample(domain_state);
   caml_reset_young_limit(domain_state);
 
-
   check_minor_heap();
   return 0;
 }

@@ -15,7 +15,6 @@
 /**************************************************************************/
 
 DOMAIN_STATE(atomic_uintnat, young_limit)
-
 /* Minor heap limit. Typically young_limit == young_start, but this
  * field is set by other domains, or by the memory profiler, to signal
  * this domain by causing a spurious allocation failure. */
