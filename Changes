@@ -81,7 +81,8 @@ Working version
   (Guillaume Munch-Maccagnoni, review by Gabriel Scherer)
 
 - #11911, #12382: Restore statmemprof functionality in part
-   (per-thread and per-domain data structures). (Nick Barnes)
+   (per-thread and per-domain data structures, RNGs/stats code). (Nick
+   Barnes)
 
 ### Code generation and optimizations:
 

@@ -19,6 +19,9 @@
 #include "caml/memory.h"
 #include "caml/memprof.h"
 
+/* number of random variables in a batch */
+#define RAND_BLOCK_SIZE 64
+
 /* type aliases for the hierarchy of structures for managing memprof status. */
 
 typedef struct memprof_config_s memprof_config_s, *memprof_config_t;
@@ -88,7 +91,211 @@ struct memprof_domain_s {
 
   /* The current profiling configuration for this domain. */
   memprof_config_s config;
+
+  /* ---- random number generation state ---- */
+
+  /* RAND_BLOCK_SIZE separate xoshiro+128 state vectors, defined in this
+   * column-major order so that SIMD-aware compilers can parallelize the
+   * algorithm. */
+  uint32_t xoshiro_state[4][RAND_BLOCK_SIZE];
+
+  /* Array of computed geometric random variables */
+  uintnat rand_geom_buff[RAND_BLOCK_SIZE];
+  uint32_t rand_pos;
+
+  /* Surplus amount of the current sampling distance, not consumed by
+   * previous allocations. Still a legitimate sample of a geometric
+   * random variable. */
+  uintnat next_rand_geom;
 };
+
+/**** Statistical sampling ****/
+
+/* We use a low-quality SplitMix64 PRNG to initialize state vectors
+ * for a high-quality high-performance 32-bit PRNG (xoshiro128+). That
+ * PRNG generates uniform random 32-bit numbers, which we use in turn
+ * to generate geometric random numbers parameterized by [lambda].
+ * This is all coded in such a way that compilers can readily use SIMD
+ * optimisations.
+ */
+
+/* splitmix64 PRNG, used to initialize the xoshiro+128 state
+ * vectors. Closely based on the public-domain implementation
+ * by Sebastiano Vigna https://xorshift.di.unimi.it/splitmix64.c */
+
+Caml_inline uint64_t splitmix64_next(uint64_t* x)
+{
+  uint64_t z = (*x += 0x9E3779B97F4A7C15ull);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+  return z ^ (z >> 31);
+}
+
+/* Initialize all the xoshiro+128 state vectors. */
+
+static void xoshiro_init(memprof_domain_t domain)
+{
+  int i;
+  uint64_t splitmix64_state = 42;
+  for (i = 0; i < RAND_BLOCK_SIZE; i++) {
+    uint64_t t = splitmix64_next(&splitmix64_state);
+    domain->xoshiro_state[0][i] = t & 0xFFFFFFFF;
+    domain->xoshiro_state[1][i] = t >> 32;
+    t = splitmix64_next(&splitmix64_state);
+    domain->xoshiro_state[2][i] = t & 0xFFFFFFFF;
+    domain->xoshiro_state[3][i] = t >> 32;
+  }
+}
+
+/* xoshiro128+ PRNG. See Blackman & Vigna; "Scrambled linear
+ * pseudorandom number generators"; ACM Trans. Math. Softw., 47:1-32,
+ * 2021:
+ * "xoshiro128+ is our choice for 32-bit floating-point generation." */
+
+Caml_inline uint32_t xoshiro_next(memprof_domain_t domain, int i)
+{
+  uint32_t res = domain->xoshiro_state[0][i] + domain->xoshiro_state[3][i];
+  uint32_t t = domain->xoshiro_state[1][i] << 9;
+  domain->xoshiro_state[2][i] ^= domain->xoshiro_state[0][i];
+  domain->xoshiro_state[3][i] ^= domain->xoshiro_state[1][i];
+  domain->xoshiro_state[1][i] ^= domain->xoshiro_state[2][i];
+  domain->xoshiro_state[0][i] ^= domain->xoshiro_state[3][i];
+  domain->xoshiro_state[2][i] ^= t;
+  t = domain->xoshiro_state[3][i];
+  domain->xoshiro_state[3][i] = (t << 11) | (t >> 21);
+  return res;
+}
+
+/* Computes [log((y+0.5)/2^32)], up to a relatively good precision,
+ * and guarantee that the result is negative, in such a way that SIMD
+ * can parallelize it. The average absolute error is very close to
+ * 0. */
+
+Caml_inline float log_approx(uint32_t y)
+{
+  /* Use a type pun to break y+0.5 into biased exponent (in the range
+   * 126-159) and mantissa (a float in [1,2)).
+   */
+
+  union { float f; int32_t i; } u;
+
+  /* This may discard up to eight low bits of y. The sign bit of u.f
+   * (and u.i) is always clear, as y is non-negative. The other bits
+   * of y (disregarding the leading 1) end up in the mantissa */
+
+  u.f = y + 0.5f;
+
+  /* exp is the biased exponent, as a float. Given that u.f ranges
+   * between 0.5 and 2^32, and the bias of 127, exp is in [126, 159].
+   */
+
+
+  float exp = u.i >> 23;
+
+  /* Set the biased exponent to 127, i.e. exponent of zero, and obtain
+   * the resulting float, the mantissa, as x. */
+
+  u.i = (u.i & 0x7FFFFF) | 0x3F800000;
+
+  float x = u.f;
+
+  /* y+0.5 = x * 2^(exp-127), so if f(x) ~= log(x) - 159*log(2), then
+   * log((y+0.5)/2^32) ~= f(x) + exp * log(2). We choose the unique
+   * degree-3 polynomial f such that :
+
+       - Its average value is that of the desired function  in [1, 2]
+             (so the sampling has the right mean when lambda is small).
+       - f(1) = f(2) - log(2), so that it is continuous at the exponent steps.
+       - f(1) = -1e-5, so the function is everywhere negative.
+       - The maximum absolute error is minimized in [1, 2].
+
+    The actual maximum absolute error is around 7e-4. Computed with sollya.
+    */
+
+  return (-111.70172433407f +
+          x * (2.104659476859f +
+               x * (-0.720478916626f +
+                    x * 0.107132064797f)) +
+          0.6931471805f*exp);
+}
+
+/* This function regenerates [RAND_BLOCK_SIZE] geometric random
+ * variables at once. Doing this by batches help us gain performances:
+ * many compilers (e.g., GCC, CLang, ICC) will be able to use SIMD
+ * instructions to get a performance boost.
+ */
+#ifdef SUPPORTS_TREE_VECTORIZE
+__attribute__((optimize("tree-vectorize")))
+#endif
+
+static void rand_batch(memprof_domain_t domain)
+{
+  int i;
+  float one_log1m_lambda = domain->config.one_log1m_lambda;
+
+  /* Instead of using temporary buffers, we could use one big loop,
+     but it turns out SIMD optimizations of compilers are more fragile
+     when using larger loops.  */
+  uint32_t A[RAND_BLOCK_SIZE];
+  float B[RAND_BLOCK_SIZE];
+
+  /* Generate uniform variables in A using the xoshiro128+ PRNG. */
+  for (i = 0; i < RAND_BLOCK_SIZE; i++)
+    A[i] = xoshiro_next(domain, i);
+
+  /* Generate exponential random variables by computing logarithms. */
+  for (i = 0; i < RAND_BLOCK_SIZE; i++)
+    B[i] = 1 + log_approx(A[i]) * one_log1m_lambda;
+
+  /* We do the final flooring for generating geometric
+     variables. Compilers are unlikely to use SIMD instructions for
+     this loop, because it involves a conditional and variables of
+     different sizes (32 and 64 bits). */
+  for (i = 0; i < RAND_BLOCK_SIZE; i++) {
+    double f = B[i];
+    CAMLassert (f >= 1);
+    /* [Max_long+1] is a power of two => no rounding in the test. */
+    if (f >= Max_long+1)
+      domain->rand_geom_buff[i] = Max_long;
+    else domain->rand_geom_buff[i] = (uintnat)f;
+  }
+
+  domain->rand_pos = 0;
+}
+
+/* Simulate a geometric random variable of parameter [lambda].
+ * The result is clipped in [1..Max_long] */
+static uintnat rand_geom(memprof_domain_t domain)
+{
+  uintnat res;
+  if (domain->rand_pos == RAND_BLOCK_SIZE) rand_batch(domain);
+  res = domain->rand_geom_buff[domain->rand_pos++];
+  CAMLassert(1 <= res && res <= Max_long);
+  return res;
+}
+
+/* Simulate a binomial random variable of parameters [len] and
+ * [lambda]. This tells us how many times a single block allocation is
+ * sampled.  This sampling algorithm has running time linear with [len
+ * * lambda].  We could use a more involved algorithm, but this should
+ * be good enough since, in the typical use case, [lambda] << 0.01 and
+ * therefore the generation of the binomial variable is amortized by
+ * the initialialization of the corresponding block.
+ *
+ * If needed, we could use algorithm BTRS from the paper:
+ *   Hormann, Wolfgang. "The generation of binomial random variates."
+ *   Journal of statistical computation and simulation 46.1-2 (1993), pp101-110.
+ */
+CAMLunused /* TODO: remove */
+static uintnat rand_binom(memprof_domain_t domain, uintnat len)
+{
+  uintnat samples;
+  CAMLassert(len < Max_long);
+  for (samples = 0; domain->next_rand_geom < len; samples++)
+    domain->next_rand_geom += rand_geom(domain);
+  domain->next_rand_geom -= len;
+  return samples;
+}
 
 /**** Create and destroy thread state structures ****/
 
@@ -158,6 +365,12 @@ static memprof_domain_t domain_create(caml_domain_state *caml_state)
   domain->config.callstack_size = 0;
   domain->config.tracker = Val_unit;
 
+  xoshiro_init(domain);
+  domain->rand_pos = RAND_BLOCK_SIZE;
+
+  /* Don't fill rand_geom table until lambda is set - see
+   * domain_prepare_to_sample() */
+
   /* create initial thread for domain */
   memprof_thread_t thread = thread_create(domain);
   if (thread) {
@@ -167,6 +380,20 @@ static memprof_domain_t domain_create(caml_domain_state *caml_state)
     domain = NULL;
   }
   return domain;
+}
+
+/* Initialize the per-domain state required to actually perform sampling.
+ */
+CAMLunused /* TODO: remove */
+static void domain_prepare_to_sample(memprof_domain_t domain)
+{
+  if (!atomic_load(&domain->config.stopped)) {
+    /* next_rand_geom can be zero if the next word is to be sampled,
+     * but rand_geom always returns a value >= 1. Subtract 1 to correct. */
+    domain->next_rand_geom = rand_geom(domain) - 1;
+  }
+
+  caml_memprof_renew_minor_sample(domain->caml_state);
 }
 
 /**** Interface to domain module ***/
@@ -243,7 +470,10 @@ void caml_memprof_renew_minor_sample(caml_domain_state *state)
   memprof_domain_t domain = state->memprof;
   value *trigger = state->young_start;
   if (running(domain)) {
-    /* set trigger based on geometric distribution */
+    uintnat geom = rand_geom(domain);
+    if (state->young_ptr - state->young_start > geom) {
+      trigger = state->young_ptr - (geom - 1);
+    }
   }
   CAMLassert((trigger >= state->young_start) &&
              (trigger < state->young_ptr));
@@ -312,20 +542,6 @@ CAMLprim value caml_memprof_stop(value unit)
 #include "caml/compact.h"
 #include "caml/printexc.h"
 #include "caml/runtime_events.h"
-
-#define RAND_BLOCK_SIZE 64
-
-static uint32_t xoshiro_state[4][RAND_BLOCK_SIZE];
-static uintnat rand_geom_buff[RAND_BLOCK_SIZE];
-static uint32_t rand_pos;
-
-/* [lambda] is the mean number of samples for each allocated word (including
-   block headers). */
-static double lambda = 0;
-/* Precomputed value of [1/log(1-lambda)], for fast sampling of
-   geometric distribution.
-   Dummy if [lambda = 0]. */
-static float one_log1m_lambda;
 
 static intnat callstack_size;
 
@@ -464,154 +680,6 @@ static int started = 0;
 /* Buffer used to compute backtraces */
 static value* callstack_buffer = NULL;
 static intnat callstack_buffer_len = 0;
-
-/**** Statistical sampling ****/
-
-Caml_inline uint64_t splitmix64_next(uint64_t* x)
-{
-  uint64_t z = (*x += 0x9E3779B97F4A7C15ull);
-  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-  return z ^ (z >> 31);
-}
-
-static void xoshiro_init(void)
-{
-  int i;
-  uint64_t splitmix64_state = 42;
-  rand_pos = RAND_BLOCK_SIZE;
-  for (i = 0; i < RAND_BLOCK_SIZE; i++) {
-    uint64_t t = splitmix64_next(&splitmix64_state);
-    xoshiro_state[0][i] = t & 0xFFFFFFFF;
-    xoshiro_state[1][i] = t >> 32;
-    t = splitmix64_next(&splitmix64_state);
-    xoshiro_state[2][i] = t & 0xFFFFFFFF;
-    xoshiro_state[3][i] = t >> 32;
-  }
-}
-
-Caml_inline uint32_t xoshiro_next(int i)
-{
-  uint32_t res = xoshiro_state[0][i] + xoshiro_state[3][i];
-  uint32_t t = xoshiro_state[1][i] << 9;
-  xoshiro_state[2][i] ^= xoshiro_state[0][i];
-  xoshiro_state[3][i] ^= xoshiro_state[1][i];
-  xoshiro_state[1][i] ^= xoshiro_state[2][i];
-  xoshiro_state[0][i] ^= xoshiro_state[3][i];
-  xoshiro_state[2][i] ^= t;
-  t = xoshiro_state[3][i];
-  xoshiro_state[3][i] = (t << 11) | (t >> 21);
-  return res;
-}
-
-/* Computes [log((y+0.5)/2^32)], up to a relatively good precision,
-   and guarantee that the result is negative.
-   The average absolute error is very close to 0. */
-Caml_inline float log_approx(uint32_t y)
-{
-  union { float f; int32_t i; } u;
-  float exp, x;
-  u.f = y + 0.5f;    /* We convert y to a float ... */
-  exp = u.i >> 23;   /* ... of which we extract the exponent ... */
-  u.i = (u.i & 0x7FFFFF) | 0x3F800000;
-  x = u.f;           /* ... and the mantissa. */
-
-  return
-    /* This polynomial computes the logarithm of the mantissa (which
-       is in [1, 2]), up to an additive constant. It is chosen such that :
-       - Its degree is 4.
-       - Its average value is that of log in [1, 2]
-             (the sampling has the right mean when lambda is small).
-       - f(1) = f(2) - log(2) = -159*log(2) - 1e-5
-             (this guarantee that log_approx(y) is always <= -1e-5 < 0).
-       - The maximum of abs(f(x)-log(x)+159*log(2)) is minimized.
-    */
-    x * (2.104659476859f + x * (-0.720478916626f + x * 0.107132064797f))
-
-    /* Then, we add the term corresponding to the exponent, and
-       additive constants. */
-    + (-111.701724334061f + 0.6931471805f*exp);
-}
-
-/* This function regenerates [MT_STATE_SIZE] geometric random
-   variables at once. Doing this by batches help us gain performances:
-   many compilers (e.g., GCC, CLang, ICC) will be able to use SIMD
-   instructions to get a performance boost.
-*/
-#ifdef SUPPORTS_TREE_VECTORIZE
-__attribute__((optimize("tree-vectorize")))
-#endif
-static void rand_batch(void)
-{
-  int i;
-
-  /* Instead of using temporary buffers, we could use one big loop,
-     but it turns out SIMD optimizations of compilers are more fragile
-     when using larger loops.  */
-  static uint32_t A[RAND_BLOCK_SIZE];
-  static float B[RAND_BLOCK_SIZE];
-
-  CAMLassert(lambda > 0.);
-
-  /* Shuffle the xoshiro samplers, and generate uniform variables in A. */
-  for (i = 0; i < RAND_BLOCK_SIZE; i++)
-    A[i] = xoshiro_next(i);
-
-  /* Generate exponential random variables by computing logarithms. We
-     do not use math.h library functions, which are slow and prevent
-     compiler from using SIMD instructions. */
-  for (i = 0; i < RAND_BLOCK_SIZE; i++)
-    B[i] = 1 + log_approx(A[i]) * one_log1m_lambda;
-
-  /* We do the final flooring for generating geometric
-     variables. Compilers are unlikely to use SIMD instructions for
-     this loop, because it involves a conditional and variables of
-     different sizes (32 and 64 bits). */
-  for (i = 0; i < RAND_BLOCK_SIZE; i++) {
-    double f = B[i];
-    CAMLassert (f >= 1);
-    /* [Max_long+1] is a power of two => no rounding in the test. */
-    if (f >= Max_long+1)
-      rand_geom_buff[i] = Max_long;
-    else rand_geom_buff[i] = (uintnat)f;
-  }
-
-  rand_pos = 0;
-}
-
-/* Simulate a geometric variable of parameter [lambda].
-   The result is clipped in [1..Max_long] */
-static uintnat rand_geom(void)
-{
-  uintnat res;
-  CAMLassert(lambda > 0.);
-  if (rand_pos == RAND_BLOCK_SIZE) rand_batch();
-  res = rand_geom_buff[rand_pos++];
-  CAMLassert(1 <= res && res <= Max_long);
-  return res;
-}
-
-static uintnat next_rand_geom;
-/* Simulate a binomial variable of parameters [len] and [lambda].
-   This sampling algorithm has running time linear with [len *
-   lambda].  We could use more a involved algorithm, but this should
-   be good enough since, in the average use case, [lambda] <= 0.01 and
-   therefore the generation of the binomial variable is amortized by
-   the initialialization of the corresponding block.
-
-   If needed, we could use algorithm BTRS from the paper:
-     Hormann, Wolfgang. "The generation of binomial random variates."
-     Journal of statistical computation and simulation 46.1-2 (1993), pp101-110.
- */
-static uintnat rand_binom(uintnat len)
-{
-  uintnat res;
-  CAMLassert(lambda > 0. && len < Max_long);
-  for (res = 0; next_rand_geom < len; res++)
-    next_rand_geom += rand_geom();
-  next_rand_geom -= len;
-  return res;
-}
 
 /**** Capturing the call stack *****/
 
