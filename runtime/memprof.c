@@ -178,19 +178,19 @@ void caml_memprof_new_domain(caml_domain_state *parent,
 
   child->memprof = domain;
   /* if parent domain is profiling, child domain should also be profiling */
-  if (domain && parent && parent->memprof
+  if (domain && parent
       && !atomic_load(&parent->memprof->config.stopped)) {
     domain->config = parent->memprof->config;
   }
 }
 
-void caml_memprof_delete_domain(caml_domain_state *domain)
+void caml_memprof_delete_domain(caml_domain_state *state)
 {
-  if (!domain->memprof) {
+  if (!state->memprof) {
     return;
   }
-  domain_destroy(domain->memprof);
-  domain->memprof = NULL;
+  domain_destroy(state->memprof);
+  state->memprof = NULL;
 }
 
 /**** Interface with domain action-pending flag ****/
@@ -228,7 +228,6 @@ Caml_inline bool running(memprof_domain_t domain)
 
   return (thread
           && !atomic_load(&domain->config.stopped)
-          && domain->config.lambda > 0
           && !thread->suspended);
 }
 
@@ -254,17 +253,15 @@ void caml_memprof_renew_minor_sample(caml_domain_state *state)
 
 /**** Interface with systhread. ****/
 
-CAMLexport memprof_thread_t caml_memprof_new_thread(caml_domain_state *domain)
+CAMLexport memprof_thread_t caml_memprof_new_thread(caml_domain_state *state)
 {
-  CAMLassert(domain->memprof);
-  return thread_create(domain->memprof);
+  return thread_create(state->memprof);
 }
 
-CAMLexport memprof_thread_t caml_memprof_main_thread(caml_domain_state *domain)
+CAMLexport memprof_thread_t caml_memprof_main_thread(caml_domain_state *state)
 {
-  memprof_domain_t memprof_domain = domain->memprof;
-  CAMLassert(memprof_domain);
-  memprof_thread_t thread = memprof_domain->threads;
+  memprof_domain_t domain = state->memprof;
+  memprof_thread_t thread = domain->threads;
 
   /* There should currently be just one thread in this domain */
   CAMLassert(thread);

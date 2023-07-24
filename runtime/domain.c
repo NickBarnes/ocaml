@@ -569,8 +569,6 @@ static void domain_create(uintnat initial_minor_heap_wsize,
   CAMLassert(!s->running);
   CAMLassert(!s->interrupt_pending);
 
-  domain_self = d;
-
   /* If the chosen domain slot has not been previously used, allocate a fresh
      domain state. Otherwise, reuse it.
 
@@ -592,6 +590,19 @@ static void domain_create(uintnat initial_minor_heap_wsize,
     domain_state = d->state;
   }
 
+  /* Tell memprof system about the new domain before either (a) new
+   * domain can allocate anything or (b) parent domain can go away. */
+  caml_memprof_new_domain(parent, domain_state);
+  if (!domain_state->memprof) {
+    goto domain_init_complete;
+  }
+
+  /* Only set domain_self if we have successfully allocated the
+   * caml_domain_state and memprof domain state. Otherwise domain_self will
+   * still be NULL and it's up to the caller to deal with that. */
+
+  domain_self = d;
+
   caml_state = domain_state;
 
   s->unique_id = fresh_domain_unique_id();
@@ -612,10 +623,6 @@ static void domain_create(uintnat initial_minor_heap_wsize,
   domain_state->dependent_allocated = 0;
 
   domain_state->major_work_done_between_slices = 0;
-
-  /* Tell memprof system about the new domain before either (a) new
-   * domain can allocate anything or (b) parent domain can go away. */
-  caml_memprof_new_domain(parent, domain_state);
 
   /* the minor heap will be initialized by
      [caml_reallocate_minor_heap] below. */
@@ -1099,6 +1106,9 @@ static void* domain_thread_func(void* v)
 
   dom_internal *parent = internal_of_interruptor(p->parent);
   domain_create(caml_params->init_minor_heap_wsz, parent->state);
+
+  if (!domain_self) caml_fatal_error("Failed to create domain");
+
   /* this domain is now part of the STW participant set */
   p->newdom = domain_self;
 
