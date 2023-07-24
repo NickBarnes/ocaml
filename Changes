@@ -76,6 +76,10 @@ Working version
   (Guillaume Munch-Maccagnoni, review by Anil Madhavapeddy and KC
    Sivaramakrishnan)
 
+- #12408: `Domain.spawn` no longer leaks its functional argument for
+  the whole duration of the children domain lifetime.
+  (Guillaume Munch-Maccagnoni, review by Gabriel Scherer)
+
 - #11911, #12382: Restore statmemprof functionality in part
    (per-thread and per-domain data structures). (Nick Barnes)
 
