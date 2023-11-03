@@ -157,6 +157,32 @@ static memprof_domain_t domain_create(caml_domain_state *caml_state)
   return domain;
 }
 
+/**** GC interface ****/
+
+void caml_memprof_scan_roots(scanning_action f,
+                             scanning_action_flags fflags,
+                             void* fdata,
+                             caml_domain_state *domain,
+                             _Bool young,
+                             _Bool global)
+{
+}
+
+void caml_memprof_after_minor_gc(caml_domain_state *state, _Bool global)
+{
+}
+
+void caml_memprof_after_major_gc(caml_domain_state *state, _Bool global)
+{
+}
+
+/**** Running callbacks ****/
+
+value caml_memprof_run_callbacks_exn(void)
+{
+  return Val_unit;
+}
+
 /**** Interface to domain module ***/
 
 void caml_memprof_new_domain(caml_domain_state *parent,
