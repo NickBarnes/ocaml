@@ -15,6 +15,7 @@
 
 #define CAML_INTERNALS
 
+#include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -589,7 +590,7 @@ void caml_empty_minor_heap_promote(caml_domain_state* domain,
 
   CAML_EV_BEGIN(EV_MINOR_MEMPROF_ROOTS);
   caml_memprof_scan_roots(&oldify_one, oldify_scanning_flags, &st,
-                          domain, participating[0] == domain);
+                          domain, false, participating[0] == domain);
   CAML_EV_END(EV_MINOR_MEMPROF_ROOTS);
 
   CAML_EV_BEGIN(EV_MINOR_REMEMBERED_SET_PROMOTE);

@@ -1071,6 +1071,7 @@ struct scan_closure {
   scanning_action f;
   scanning_action_flags fflags;
   void *fdata;
+  bool weak;
 };
 
 /* An entry_action to scan the user_data root */
@@ -1079,6 +1080,9 @@ static bool entry_scan(entry_t entry, void *data)
 {
   struct scan_closure *closure = data;
   closure->f(closure->fdata, entry->user_data, &entry->user_data);
+  if (closure->weak && (entry->block != Val_unit)) {
+    closure->f(closure->fdata, entry->block, &entry->block);
+  }
   return false;
 }
 
@@ -1097,6 +1101,7 @@ void caml_memprof_scan_roots(scanning_action f,
                              scanning_action_flags fflags,
                              void* fdata,
                              caml_domain_state *state,
+                             bool weak,
                              bool global)
 {
   memprof_domain_t domain = state->memprof;
@@ -1108,7 +1113,7 @@ void caml_memprof_scan_roots(scanning_action f,
   bool young =
     (fflags & SCANNING_ONLY_YOUNG_VALUES) == SCANNING_ONLY_YOUNG_VALUES;
 
-  struct scan_closure closure = {f, fflags, fdata};
+  struct scan_closure closure = {f, fflags, fdata, weak};
 
   domain_apply_actions(domain, young,
                        entry_scan, &closure, entries_finish_scan);

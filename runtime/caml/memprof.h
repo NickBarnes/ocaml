@@ -55,6 +55,9 @@ extern void caml_memprof_update_suspended(_Bool);
  * `fflags` is used to decide whether to only scan roots which may
  * point to minor heaps.
  *
+ * If `weak` is false then only scan strong roots. If `weak`
+ * is true then also scan weak roots.
+ *
  * If `global` is false then only scan roots for `state`. If `global`
  * is true then also scan roots shared between all domains.
  */
@@ -63,6 +66,7 @@ extern void caml_memprof_scan_roots(scanning_action f,
                                     scanning_action_flags fflags,
                                     void* fdata,
                                     caml_domain_state *state,
+                                    _Bool weak,
                                     _Bool global);
 
 /* Update memprof data structures for the domain `state`, to reflect
