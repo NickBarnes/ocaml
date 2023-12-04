@@ -358,15 +358,15 @@ enum { SRC_NORMAL = 0, SRC_MARSHAL = 1, SRC_CUSTOM = 2 };
 #define CONFIG_FIELD_FIRST_CALLBACK CONFIG_FIELD_ALLOC_MINOR
 #define CONFIG_FIELD_LAST_CALLBACK CONFIG_FIELD_DEALLOC_MAJOR
 
-#define CONFIG_STATUS_RUNNING 0
+#define CONFIG_STATUS_SAMPLING 0
 #define CONFIG_STATUS_STOPPED 1
 #define CONFIG_STATUS_DISCARDED 2
 
 #define CONFIG_NONE Val_unit
 
 #define Status(config)          Int_val(Field(config, CONFIG_FIELD_STATUS))
-#define Running(config)          ((config != CONFIG_NONE) && \
-                                  (Status(config) == CONFIG_STATUS_RUNNING))
+#define Sampling(config)          ((config != CONFIG_NONE) && \
+                                  (Status(config) == CONFIG_STATUS_SAMPLING))
 
 /* The 'status' field is the only one we ever update. */
 
@@ -1756,13 +1756,13 @@ value caml_memprof_run_callbacks_exn(void)
 
 /**** Sampling ****/
 
-Caml_inline bool running(memprof_domain_t domain)
+Caml_inline bool sampling(memprof_domain_t domain)
 {
   memprof_thread_t thread = domain->current;
 
   if (thread && !thread->suspended) {
     value config = thread_config(thread);
-    return Running(config) && Lambda(config) > 0.0;
+    return Sampling(config) && Lambda(config) > 0.0;
   }
   return false;
 }
@@ -1797,7 +1797,7 @@ void caml_memprof_renew_minor_sample(caml_domain_state *state)
 {
   memprof_domain_t domain = state->memprof;
   value *trigger = state->young_start;
-  if (running(domain)) {
+  if (sampling(domain)) {
     uintnat geom = rand_geom(domain);
     if (state->young_ptr - state->young_start > geom) {
       trigger = state->young_ptr - (geom - 1);
@@ -1816,7 +1816,7 @@ void caml_memprof_renew_minor_sample(caml_domain_state *state)
 void caml_memprof_track_alloc_shr(value block)
 {
   memprof_domain_t domain = Caml_state->memprof;
-  if (!running(domain))
+  if (!sampling(domain))
     return;
 
   maybe_track_block(domain, block, rand_binom(domain, Whsize_val(block)),
@@ -1830,7 +1830,7 @@ void caml_memprof_track_alloc_shr(value block)
 void caml_memprof_track_custom(value block, mlsize_t bytes)
 {
   memprof_domain_t domain = Caml_state->memprof;
-  if (!running(domain))
+  if (!sampling(domain))
     return;
 
   maybe_track_block(domain, block, rand_binom(domain, Wsize_bsize(bytes)),
@@ -1852,9 +1852,9 @@ void caml_memprof_track_young(uintnat wosize, int from_caml,
   CAMLlocal1(config);
   config = thread->entries.config;
 
-  /* When a domain is not running memprof, the memprof trigger is not
+  /* When a domain is not sampling memprof, the memprof trigger is not
    * set, so we should not come into this function. */
-  CAMLassert(running(domain));
+  CAMLassert(sampling(domain));
 
   if (!from_caml) {
     /* Not coming from Caml, so this isn't a comballoc. We know we're
@@ -1934,7 +1934,7 @@ void caml_memprof_track_young(uintnat wosize, int from_caml,
        * have been stopped or discarded, etc. */
       if (thread_config(thread) == config) {
         /* common case - still in the same profile */
-        if (!Running(config)) { /* sampling stopped during callback */
+        if (!Sampling(config)) { /* sampling stopped during callback */
           trigger_ofs = 0; /* no more samples for this comb-alloc */
         }
       } else {
@@ -1946,7 +1946,7 @@ void caml_memprof_track_young(uintnat wosize, int from_caml,
          * TODO: correct treatment of any Placeholder() entries when
          * orphaning entries: delete them? */
         new_entries = 0;
-        if (Running(config)) {
+        if (Sampling(config)) {
           /* start again (for new profile) from the next sub-allocation. */
           trigger_ofs = alloc_ofs - (rand_geom(domain) - 1);
         } else {
@@ -2065,7 +2065,7 @@ CAMLprim value caml_memprof_start(value lv, value szv, value tracker)
 
   memprof_domain_t domain = Caml_state->memprof;
 
-  if (Running(thread_config(domain->current))) {
+  if (Sampling(thread_config(domain->current))) {
     caml_failwith("Gc.Memprof.start: already started.");
   }
 
@@ -2092,7 +2092,7 @@ CAMLprim value caml_memprof_start(value lv, value szv, value tracker)
 
   value config = caml_alloc_shr(CONFIG_FIELDS, 0);
   caml_initialize(&Field(config, CONFIG_FIELD_STATUS),
-                  Val_int(CONFIG_STATUS_RUNNING));
+                  Val_int(CONFIG_STATUS_SAMPLING));
   caml_initialize(&Field(config, CONFIG_FIELD_LAMBDA), lv);
   caml_initialize(&Field(config, CONFIG_FIELD_1LOG1ML), one_log1m_lambda_v);
   caml_initialize(&Field(config, CONFIG_FIELD_FRAMES), szv);
@@ -2125,7 +2125,7 @@ CAMLprim value caml_memprof_stop(value unit)
   memprof_domain_t domain = Caml_state->memprof;
   value config = thread_config(domain->current);
 
-  if (config == CONFIG_NONE || Status(config) != CONFIG_STATUS_RUNNING) {
+  if (config == CONFIG_NONE || Status(config) != CONFIG_STATUS_SAMPLING) {
     caml_failwith("Gc.Memprof.stop: no profile running.");
   }
   Set_status(config, CONFIG_STATUS_STOPPED);
@@ -2139,13 +2139,13 @@ CAMLprim value caml_memprof_discard(value config)
 {
   uintnat status = Status(config);
   CAMLassert((status == CONFIG_STATUS_STOPPED) ||
-             (status == CONFIG_STATUS_RUNNING) ||
+             (status == CONFIG_STATUS_SAMPLING) ||
              (status == CONFIG_STATUS_DISCARDED));
 
   switch (status) {
   case CONFIG_STATUS_STOPPED: /* correct case */
     break;
-  case CONFIG_STATUS_RUNNING:
+  case CONFIG_STATUS_SAMPLING:
     caml_failwith("Gc.Memprof.discard: profile not stopped.");
   case CONFIG_STATUS_DISCARDED:
     caml_failwith("Gc.Memprof.discard: profile already discarded.");
