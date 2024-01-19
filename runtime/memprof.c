@@ -39,7 +39,9 @@
  * a block on the OCaml heap containing the profile configuration. As
  * a profile may be shared between threads and domains, keeping it on
  * the OCaml heap allows us not to worry about its liveness - pointers
- * to it from C-heap objects are simply treated as GC roots.
+ * to it from memprof data structures are simply treated as GC roots.
+ * The "status" field in this object allows distinct domains to safely
+ * `stop` and `discard` (with atomic reads and writes).
  *
  * 1.2. Entries
  *
@@ -61,13 +63,17 @@
  * The entries table also has a pointer to the configuration object on
  * the OCaml heap, for the profile under which all the entries in the
  * table were sampled. This allows callbacks on the table to be run at
- * any later time, regardless of the current profile of the particular
- * domain running the callback. A consequence is that all entries in a
- * table must be from the same profile.
+ * any later time, regardless of the currently-sampling profile of the
+ * particular domain running the callback. A consequence is that all
+ * entries in a table must be from the same profile.
  *
  * After a profile is "discarded", entries may still exist for blocks
  * allocated in that profile, but no callbacks will be called for it
- * (and those entries themselves will be discarded lazily).
+ * (those entries themselves will be discarded lazily).
+ *
+ * There is code for iterating over entries in a table, which is used
+ * when scanning for GC roots or updating tables to reflect GC activity
+ * (see below).
  *
  * 1.3. Threads
  *
@@ -99,19 +105,20 @@
  *
  * 1.5. Orphans
  *
- * If a domain starts a profile while it has entries (tracked blocks)
- * from a previous profile which has not been "discarded", it moves
- * those entries to its "orphans" list - a linked list of entry tables
- * - for subsequent processing.
+ * When sampling is stopped for a profile, all domains and threads
+ * continue to manage the entry tables for it as before, but without
+ * running allocation callbacks. However, if a domain starts a profile
+ * while it has entries (tracked blocks) from a previous profile which
+ * has not been "discarded", it moves those entries to its "orphans"
+ * list - a linked list of entry tables - for subsequent processing.
  *
  * If a domain is terminated, all its current and orphaned entries
- * (and those of its threads) are moved to a global orphans list. The
- * global orphans list, and its protective lock `orphans_lock`, are
- * the only memprof globals. No domain processes the entries in the
- * global orphans list directly: the first domain to look at the list
- * (either at a collection or when checking for pending callbacks)
- * adopts all the entry tables on it and then processes them as its
- * own.
+ * (and those of its threads) are moved to a global orphans list. This
+ * list, and its protective lock `orphans_lock`, are the only memprof
+ * globals. No domain processes the entries in the global orphans list
+ * directly: the first domain to look at the list (either at a
+ * collection or when checking for pending callbacks) adopts all entry
+ * tables on it and then processes them as its own.
  *
  * 2. Synchronisation
  *
@@ -148,9 +155,9 @@
  * in every entries table. Rather than manually registering and
  * deregistering all of these, the GC calls caml_memprof_scan_roots()
  * to scan them, in either minor or major collections. This function
- * is called by all domains in parallel. Each domain scans its own
- * roots, and a single domain also scans any roots shared between
- * domains (those in the orphaned entries tables).
+ * is called by all domains in parallel. A single domain adopts any
+ * global orphaned entries tables, and then each domain scans its own
+ * roots.
  *
  * 3.2. Updating block status.
  *
@@ -158,10 +165,11 @@
  * discover whether they have survived the GC, or (for a minor GC)
  * whether they have been promoted to the major heap. This is done by
  * caml_memprof_after_minor_gc() and caml_memprof_after_major_gc(),
- * which use the same entries table iterator system as
+ * which share the system for iterating over entries tables as used by
  * caml_memprof_scan_roots(). Again, these functions are called by all
- * domains in parallel, and a single donain is responsible for
- * orphaned entries tables.
+ * domains in parallel, a single domain starts by adopting any global
+ * orphaned entries tables, and then each domain updates its own
+ * entries.
  *
  * 3.3. Compaction
  *
@@ -221,16 +229,17 @@
  * lifetimes, so we don't want to allocate them on the shared
  * heap. However, we can't always allocate them directly on the Caml
  * minor heap, as some allocations (e.g. allocating in the shared heap
- * from the runtime) may take place at points at which GC is not safe.
- * In those cases we "stash" the backtrace on the C heap, and copy it
- * onto the Caml heap when we are about to call the allocation
- * callback.
+ * from the runtime) may take place at points at which GC is not safe
+ * (and so minor-heap allocation is not permitted).  In those cases we
+ * "stash" the backtrace on the C heap, and copy it onto the Caml heap
+ * when we are about to call the allocation callback.
  *
  * 6. Sampling
  *
  * We sample allocation for all threads in a domain which has a
  * currently sampling profile, except when such a thread is running a
- * memprof callback, at which time sampling is "suspended".
+ * memprof callback, at which time sampling is "suspended" on that
+ * thread.
  *
  * Sampling allocation divides into two cases: one simple and one
  * complex.
@@ -255,9 +264,10 @@
  * reasons:
  *
  * - Deferred allocation. A sampled block is not actually allocated
- *   until the runtime returns to the GC poll point in Caml code. So
- *   we have to predict the address of the sampled block for the entry
- *   record, to track its future promotion or collection.
+ *   until the runtime returns to the GC poll point in Caml code,
+ *   after the memprof sampling code has run. So we have to predict
+ *   the address of the sampled block for the entry record, to track
+ *   its future promotion or collection.
  *
  * - Combined allocations. A single GC poll point in Caml code may
  *   combine the allocation of several distinct blocks, each of which
@@ -279,7 +289,7 @@
  *
  *   If an allocation callback changes the profile of the current
  *   thread (for example, by stopping it, and possibly by starting a
- *   new one), we must take care not to correctly sample any remaining
+ *   new one), we must take care to correctly sample any remaining
  *   allocated blocks from the current poll point.
  *
  *   We must take care to arrange heap metadata such that it is safe
