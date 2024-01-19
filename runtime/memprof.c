@@ -15,10 +15,12 @@
 
 #define CAML_INTERNALS
 
-<<<<<<< HEAD
 #include <stdbool.h>
+#include "caml/alloc.h"
+#include "caml/fail.h"
 #include "caml/memory.h"
 #include "caml/memprof.h"
+#include "caml/mlvalues.h"
 
 /* type aliases for the hierarchy of structures for managing memprof status. */
 
@@ -43,23 +45,58 @@ struct memprof_thread_s {
   memprof_thread_t next;
 };
 
-/* A memprof configuration is held in an object on the Caml
- * heap. These are getter macros for each field. */
+/* A memprof configuration is held in an object on the Caml heap, of
+ * type Gc.Memprof.t. Here we define getter macros for each field, and
+ * a setter macro for the status field (which is updated). */
 
-#define Stopped(config)          Bool_val(Field(config, 0))
-#define Running(config)          ((config != Val_unit) && !Stopped(config))
-#define Lambda(config)           Double_val(Field(config, 1))
-#define One_log1m_lambda(config) Double_val(Field(config, 2))
-#define Callstack_size(config)   Int_val(Field(config, 3)
-#define Alloc_minor(config)      Field(config, 4)
-#define Alloc_major(config)      Field(config, 5)
-#define Promote(config)          Field(config, 6)
-#define Dealloc_minor(config)    Field(config, 7)
-#define Dealloc_major(config)    Field(config, 8)
+#define CONFIG_FIELDS 9
 
-/* The 'stopped' field is the only one we ever update. */
+#define CONFIG_FIELD_STATUS        0
+#define CONFIG_FIELD_LAMBDA        1
+#define CONFIG_FIELD_1LOG1ML       2
+#define CONFIG_FIELD_FRAMES        3
+#define CONFIG_FIELD_ALLOC_MINOR   4
+#define CONFIG_FIELD_ALLOC_MAJOR   5
+#define CONFIG_FIELD_PROMOTE       6
+#define CONFIG_FIELD_DEALLOC_MINOR 7
+#define CONFIG_FIELD_DEALLOC_MAJOR 8
 
-#define Set_stopped(config, flag) (Field(config, 0) = Val_bool(flag))
+#define CONFIG_FIELD_FIRST_CALLBACK CONFIG_FIELD_ALLOC_MINOR
+#define CONFIG_FIELD_LAST_CALLBACK CONFIG_FIELD_DEALLOC_MAJOR
+
+#define CONFIG_STATUS_RUNNING 0
+#define CONFIG_STATUS_STOPPED 1
+#define CONFIG_STATUS_DISCARDED 2
+
+#define CONFIG_NONE Val_unit
+
+#define Status(config)          Int_val(Field(config, CONFIG_FIELD_STATUS))
+#define Running(config)          ((config != CONFIG_NONE) && \
+                                  (Status(config) == CONFIG_STATUS_RUNNING))
+
+/* The 'status' field is the only one we ever update. */
+
+#define Set_status(config, stat) \
+  Store_field(config, CONFIG_FIELD_STATUS, Val_int(stat))
+
+/* lambda: the fraction of allocated words to sample 0 <= lambda <= 1 */
+#define Lambda(config) \
+  Double_val(Field(config, CONFIG_FIELD_LAMBDA))
+
+/* 1/ln(1-lambda), pre-computed for use in the geometric RNG */
+#define One_log1m_lambda(config) \
+  Double_val(Field(config, CONFIG_FIELD_1LOG1ML))
+
+/* The number of frames to record for each allocation site */
+#define Callstack_size(config) \
+  Int_val(Field(config, CONFIG_FIELD_FRAMES))
+
+/* callbacks */
+#define Alloc_minor(config)   Field(config, CONFIG_FIELD_ALLOC_MINOR)
+#define Alloc_major(config)   Field(config, CONFIG_FIELD_ALLOC_MAJOR)
+#define Promote(config)       Field(config, CONFIG_FIELD_PROMOTE)
+#define Dealloc_minor(config) Field(config, CONFIG_FIELD_DEALLOC_MINOR)
+#define Dealloc_major(config) Field(config, CONFIG_FIELD_DEALLOC_MAJOR)
 
 /* Per-domain memprof state */
 
@@ -76,11 +113,25 @@ struct memprof_domain_s {
      site of caml_memprof_leave_thread() in st_stubs.c. */
   memprof_thread_t current;
 
-  /* TODO: More fields to add here */
-
   /* The current profiling configuration for this domain. */
   value config;
+
+  /* TODO: More fields to add here */
 };
+
+/* Return configuration for a domain. If it's been discarded (e.g. by
+   another domain) then reset it to CONFIG_NONE and return that.
+*/
+
+static value domain_config(memprof_domain_t domain)
+{
+  value config = domain->config;
+  if ((config != CONFIG_NONE) &&
+      (Status(config) == CONFIG_STATUS_DISCARDED)) {
+    config = domain->config = CONFIG_NONE;
+  }
+  return config;
+}
 
 /**** Create and destroy thread state structures ****/
 
@@ -144,7 +195,7 @@ static memprof_domain_t domain_create(caml_domain_state *caml_state)
   domain->caml_state = caml_state;
   domain->threads = NULL;
   domain->current = NULL;
-  domain->config = Val_unit;
+  domain->config = CONFIG_NONE;
 
   /* create initial thread for domain */
   memprof_thread_t thread = thread_create(domain);
@@ -162,10 +213,13 @@ static memprof_domain_t domain_create(caml_domain_state *caml_state)
 void caml_memprof_scan_roots(scanning_action f,
                              scanning_action_flags fflags,
                              void* fdata,
-                             caml_domain_state *domain,
+                             caml_domain_state *state,
                              _Bool young,
                              _Bool global)
 {
+  memprof_domain_t domain = state->memprof;
+
+  f(fdata, domain->config, &domain->config);
 }
 
 void caml_memprof_after_minor_gc(caml_domain_state *state, _Bool global)
@@ -240,8 +294,7 @@ Caml_inline bool running(memprof_domain_t domain)
   memprof_thread_t thread = domain->current;
 
   if (thread && !thread->suspended) {
-    value config = domain->config;
-    return Running(config);
+    return Running(domain_config(domain));
   }
   return false;
 }
@@ -266,6 +319,20 @@ void caml_memprof_renew_minor_sample(caml_domain_state *state)
              (trigger <= state->young_ptr));
   state->memprof_young_trigger = trigger;
   caml_reset_young_limit(state);
+}
+
+
+void caml_memprof_track_alloc_shr(value block)
+{
+}
+
+void caml_memprof_track_custom(value block, mlsize_t bytes)
+{
+}
+
+void caml_memprof_track_young(uintnat wosize, int from_caml,
+                              int nallocs, unsigned char* alloc_lens)
+{
 }
 
 /**** Interface with systhread. ****/
@@ -299,67 +366,86 @@ CAMLexport void caml_memprof_enter_thread(memprof_thread_t thread)
 
 /**** Interface to OCaml ****/
 
-||||||| parent of cffdf40be9 (Basic wiring to connect multicore statmemprof to the GC and allocation.)
-=======
-#include "caml/mlvalues.h"
-#include "caml/memprof.h"
-
-/**** Sampling procedures ****/
-
-void caml_memprof_track_alloc_shr(value block)
+CAMLprim value caml_memprof_start(value lv, value szv, value tracker)
 {
-}
+  CAMLparam3(lv, szv, tracker);
+  CAMLlocal1(one_log1m_lambda_v);
 
-void caml_memprof_track_custom(value block, mlsize_t bytes)
-{
-}
+  double lambda = Double_val(lv);
+  intnat sz = Long_val(szv);
 
-void caml_memprof_track_young(uintnat wosize, int from_caml,
-                              int nallocs, unsigned char* alloc_lens)
-{
-}
+  /* Checks that [lambda] is within range (and not NaN). */
+  if (sz < 0 || !(lambda >= 0.) || lambda > 1.)
+    caml_invalid_argument("Gc.Memprof.start");
 
-/**** GC interface ****/
+  memprof_domain_t domain = Caml_state->memprof;
 
-void caml_memprof_renew_minor_sample(void)
-{
-}
+  if (Running(domain_config(domain))) {
+    caml_failwith("Gc.Memprof.start: already started.");
+  }
 
-value *caml_memprof_young_trigger;
+  double one_log1m_lambda = lambda == 1.0 ? 0.0 : 1.0/caml_log1p(-lambda);
+  one_log1m_lambda_v = caml_copy_double(one_log1m_lambda);
 
-void caml_memprof_scan_roots(scanning_action f,
-                             scanning_action_flags fflags,
-                             void* fdata,
-                             caml_domain_state *domain,
-                             _Bool young,
-                             _Bool global)
-{
-}
+  value config = caml_alloc_shr(CONFIG_FIELDS, 0);
+  caml_initialize(&Field(config, CONFIG_FIELD_STATUS),
+                  Val_int(CONFIG_STATUS_RUNNING));
+  caml_initialize(&Field(config, CONFIG_FIELD_LAMBDA), lv);
+  caml_initialize(&Field(config, CONFIG_FIELD_1LOG1ML), one_log1m_lambda_v);
+  caml_initialize(&Field(config, CONFIG_FIELD_FRAMES), szv);
+  for (int i = CONFIG_FIELD_FIRST_CALLBACK;
+       i <= CONFIG_FIELD_LAST_CALLBACK; ++i) {
+    caml_initialize(&Field(config, i), Field(tracker,
+                                             i - CONFIG_FIELD_FIRST_CALLBACK));
+  }
 
-void caml_memprof_after_minor_gc(caml_domain_state *state, _Bool global)
-{
-}
+  domain->config = config;
 
-void caml_memprof_after_major_gc(caml_domain_state *state, _Bool global)
-{
-}
+  caml_memprof_renew_minor_sample(Caml_state);
 
->>>>>>> cffdf40be9 (Basic wiring to connect multicore statmemprof to the GC and allocation.)
-#include "caml/fail.h"
-
-CAMLprim value caml_memprof_start(value lv, value szv, value tracker_param)
-{
-  caml_failwith("Gc.Memprof.start: not implemented in multicore");
+  CAMLreturn(config);
 }
 
 CAMLprim value caml_memprof_stop(value unit)
 {
-  caml_failwith("Gc.Memprof.stop: not implemented in multicore");
+  memprof_domain_t domain = Caml_state->memprof;
+  value config = domain_config(domain);
+
+  if (config == CONFIG_NONE || Status(config) != CONFIG_STATUS_RUNNING) {
+    caml_failwith("Gc.Memprof.stop: no profile running.");
+  }
+  Set_status(config, CONFIG_STATUS_STOPPED);
+
+  caml_memprof_renew_minor_sample(Caml_state);
+
+  return Val_unit;
 }
 
-CAMLprim value caml_memprof_discard(value profile)
+CAMLprim value caml_memprof_discard(value config)
 {
-  caml_failwith("Gc.Memprof.discard: not implemented in multicore");
+  uintnat status = Status(config);
+  CAMLassert((status == CONFIG_STATUS_STOPPED) ||
+             (status == CONFIG_STATUS_RUNNING) ||
+             (status == CONFIG_STATUS_DISCARDED));
+
+  switch (status) {
+  case CONFIG_STATUS_STOPPED: /* correct case */
+    break;
+  case CONFIG_STATUS_RUNNING:
+    caml_failwith("Gc.Memprof.discard: profile not stopped.");
+  case CONFIG_STATUS_DISCARDED:
+    caml_failwith("Gc.Memprof.discard: profile already discarded.");
+  }
+
+  Set_status(config, CONFIG_STATUS_DISCARDED);
+
+  /* The config pointer from the domain state is cleared lazily (see
+   * domain_config()). However, in the common case, we are discarding
+   * the profile of the current domain, so let's clear that pointer
+   * now. */
+  (void)domain_config(Caml_state->memprof);
+
+  return Val_unit;
 }
 
 /* FIXME: integrate memprof with multicore */
