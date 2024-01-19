@@ -52,8 +52,8 @@ extern void caml_memprof_update_suspended(_Bool);
 /* Apply `f(fdata, r, &r)` to each GC root `r` within memprof data
  * structures for the domain `state`.
  *
- * If `young` is false then scan all roots. If `young` is true then
- * only scan roots which may point to minor heaps.
+ * `fflags` is used to decide whether to only scan roots which may
+ * point to minor heaps.
  *
  * If `global` is false then only scan roots for `state`. If `global`
  * is true then also scan roots shared between all domains.
@@ -63,7 +63,6 @@ extern void caml_memprof_scan_roots(scanning_action f,
                                     scanning_action_flags fflags,
                                     void* fdata,
                                     caml_domain_state *state,
-                                    _Bool young,
                                     _Bool global);
 
 /* Update memprof data structures for the domain `state`, to reflect

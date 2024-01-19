@@ -1524,7 +1524,7 @@ static void stw_cycle_all_domains(caml_domain_state* domain, void* args,
 
   CAML_EV_BEGIN(EV_MAJOR_MEMPROF_ROOTS);
   caml_memprof_scan_roots(caml_darken, darken_scanning_flags, domain,
-                          domain, 0, participating[0] == Caml_state);
+                          domain, participating[0] == Caml_state);
   CAML_EV_END(EV_MAJOR_MEMPROF_ROOTS);
 
   if (domain->mark_stack->count == 0 &&

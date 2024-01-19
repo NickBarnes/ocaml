@@ -589,7 +589,7 @@ void caml_empty_minor_heap_promote(caml_domain_state* domain,
 
   CAML_EV_BEGIN(EV_MINOR_MEMPROF_ROOTS);
   caml_memprof_scan_roots(&oldify_one, oldify_scanning_flags, &st,
-                          domain, 1, participating[0] == domain);
+                          domain, participating[0] == domain);
   CAML_EV_END(EV_MINOR_MEMPROF_ROOTS);
 
   CAML_EV_BEGIN(EV_MINOR_REMEMBERED_SET_PROMOTE);
