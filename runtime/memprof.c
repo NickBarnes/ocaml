@@ -1939,6 +1939,7 @@ void caml_memprof_track_young(uintnat wosize, int from_caml,
   } while (alloc_idx);
 
   CAMLassert(alloc_ofs == 0);
+  CAMLassert(trigger_ofs <= 0);
   CAMLassert(new_entries <= nallocs);
 
   /* Run all outstanding callbacks in this thread's table, which
@@ -1979,6 +1980,16 @@ void caml_memprof_track_young(uintnat wosize, int from_caml,
     }
     Caml_state->young_ptr -= whsize;
   }
+
+  /* Reset the memprof trigger point based on trigger_ofs.
+   * Take care to avoid underflow. */
+  ptrdiff_t young_remaining = Caml_state->young_ptr - Caml_state->young_start;
+  if (trigger_ofs + young_remaining > 0) {
+    Caml_state->memprof_young_trigger = Caml_state->young_ptr + trigger_ofs;
+  } else {
+    Caml_state->memprof_young_trigger = Caml_state->young_start;
+  }
+  caml_reset_young_limit(Caml_state);
 
   /* If profiling hasn't been stopped and restarted by these
    * callbacks, offset entries for these sampled allocations may
