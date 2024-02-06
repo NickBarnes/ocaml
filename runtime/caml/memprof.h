@@ -36,11 +36,11 @@ extern void caml_memprof_track_custom(value block, mlsize_t bytes);
 
 /* Track a minor heap "Comballoc" (combined allocation). Called when
  * the memprof trigger is hit (before the allocation is actually
- * performed, which may require a GC). `nallocs` and `alloc_lens`
+ * performed, which may require a GC). `allocs` and `alloc_lens`
  * describe the combined allocation. */
 
 extern void caml_memprof_track_young(uintnat wosize, int from_caml,
-                                     int nallocs, unsigned char* alloc_lens);
+                                     int allocs, unsigned char* alloc_lens);
 
 /* Suspend or unsuspend sampling (for the current thread). */
 
