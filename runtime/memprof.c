@@ -2011,8 +2011,6 @@ void caml_memprof_track_young(uintnat wosize, int from_caml,
     }
     Caml_state->young_ptr -= whsize;
   }
-  /* Unsuspend profiling. Resets trigger. */
-  update_suspended(domain, false);
 
   /* If profiling hasn't been stopped and restarted by these
    * callbacks, offset entries for these sampled allocations may still
@@ -2047,6 +2045,9 @@ void caml_memprof_track_young(uintnat wosize, int from_caml,
      * domain. */
     entries_transfer(&thread->entries, &domain->entries);
   }
+
+  /* Unsuspend profiling. Resets trigger. */
+  update_suspended(domain, false);
 
   if (cancelled)
     caml_raise(Extract_exception(res));
