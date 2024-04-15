@@ -235,7 +235,8 @@ typedef char char_os;
 
 /* Assertions */
 
-#ifdef DEBUG
+#if defined (DEBUG) || !defined(CAML_NO_CHECK)
+CAMLnoret CAMLextern void caml_failed_assert (char *, char_os *, int);
 
 #ifdef UNICODE
 /* See https://msdn.microsoft.com/ja-jp/library/b0084kay(v=vs.71).aspx
@@ -247,12 +248,20 @@ typedef char char_os;
 #else
 #define __OSFILE__ __FILE__
 #endif
+#endif
 
+#ifdef DEBUG
 #define CAMLassert(x) \
   (CAMLlikely(x) ? (void) 0 : caml_failed_assert ( #x , __OSFILE__, __LINE__))
-CAMLnoret CAMLextern void caml_failed_assert (char *, char_os *, int);
 #else
 #define CAMLassert(x) ((void) 0)
+#endif
+
+#ifndef CAML_NO_CHECK
+#define CAMLcheck(x)                                                    \
+    (CAMLlikely(x) ? (void) 0 : caml_failed_assert ( #x , __OSFILE__, __LINE__))
+#else
+#define CAMLcheck(x) ((void) 0)
 #endif
 
 #ifdef __GNUC__
