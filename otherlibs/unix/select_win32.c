@@ -916,7 +916,7 @@ static value find_handle(LPSELECTRESULT iterResult, value readfds,
       list = exceptfds;
       break;
     case SELECT_MODE_NONE:
-      CAMLassert(0);
+      CAMLunreachable();
   };
 
   for(i=0; list != Val_unit && i < iterResult->lpOrigIdx; ++i )
@@ -1281,7 +1281,7 @@ CAMLprim value caml_unix_select(value readfds, value writefds, value exceptfds,
                       except_list = l;
                       break;
                     case SELECT_MODE_NONE:
-                      CAMLassert(0);
+                      CAMLunreachable();
                     }
                 }
               /* We try to only process the first error, bypass other errors */

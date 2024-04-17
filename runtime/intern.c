@@ -726,7 +726,7 @@ static void intern_rec(struct caml_intern_state* s,
   *dest = v;
   break;
   default:
-    CAMLassert(0);
+    CAMLunreachable();
   }
   }
   /* We are done. Cleanup the stack and leave the function */

@@ -302,7 +302,7 @@ CAMLexport void caml_ba_finalize(value v)
     /* Bigarrays for mapped files use a different finalization method */
     /* fallthrough */
   default:
-    CAMLassert(0);
+    CAMLunreachable();
   }
 }
 
@@ -386,8 +386,7 @@ CAMLexport int caml_ba_compare(value v1, value v2)
   case CAML_BA_NATIVE_INT:
     DO_INTEGER_COMPARISON(intnat);
   default:
-    CAMLassert(0);
-    return 0;                   /* should not happen */
+    CAMLunreachable();          /* should not happen */
   }
 #undef DO_INTEGER_COMPARISON
 #undef DO_FLOAT_COMPARISON
@@ -727,8 +726,6 @@ value caml_ba_get_N(value vb, volatile value * vind, int nind)
   offset = caml_ba_offset(b, index);
   /* Perform read */
   switch ((b->flags) & CAML_BA_KIND_MASK) {
-  default:
-    CAMLassert(0);
   case CAML_BA_FLOAT16:
     return caml_copy_double(
       (double) caml_float16_to_float(((uint16 *) b->data)[offset]));
@@ -760,6 +757,8 @@ value caml_ba_get_N(value vb, volatile value * vind, int nind)
       return copy_two_doubles(p[0], p[1]); }
   case CAML_BA_CHAR:
     return Val_int(((unsigned char *) b->data)[offset]);
+  default:
+    CAMLunreachable();
   }
 }
 
@@ -872,8 +871,6 @@ static value caml_ba_set_aux(value vb, volatile value * vind,
   offset = caml_ba_offset(b, index);
   /* Perform write */
   switch (b->flags & CAML_BA_KIND_MASK) {
-  default:
-    CAMLassert(0);
   case CAML_BA_FLOAT16:
     ((uint16 *) b->data)[offset] =
       caml_float_to_float16(Double_val(newval)); break;
@@ -906,6 +903,8 @@ static value caml_ba_set_aux(value vb, volatile value * vind,
       p[0] = Double_flat_field(newval, 0);
       p[1] = Double_flat_field(newval, 1);
       break; }
+  default:
+    CAMLunreachable();
   }
   return Val_unit;
 }
@@ -1288,8 +1287,6 @@ CAMLprim value caml_ba_fill(value vb, value vinit)
   intnat num_elts = caml_ba_num_elts(b);
 
   switch (b->flags & CAML_BA_KIND_MASK) {
-  default:
-    CAMLassert(0);
   case CAML_BA_FLOAT16: {
     uint16 init = caml_float_to_float16(Double_val(vinit));
     uint16 * p;
@@ -1361,6 +1358,8 @@ CAMLprim value caml_ba_fill(value vb, value vinit)
     FILL_COMPLEX_LOOP;
     break;
   }
+  default:
+    CAMLunreachable();
   }
   CAMLreturn (Val_unit);
 }
