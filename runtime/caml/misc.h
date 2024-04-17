@@ -248,6 +248,24 @@ CAMLnoret CAMLextern void caml_failed_assert (char *, char_os *, int);
 #else
 #define __OSFILE__ __FILE__
 #endif
+
+#define CAMLunreachable() abort()
+
+#else
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L || \
+    defined(__cplusplus)
+#define CAMLunreachable() unreachable()
+#elif defined(__GNUC__) || defined(__clang__)
+#define CAMLunreachable() (__builtin_unreachable())
+#elif defined(_MSC_VER)
+#define CAMLunreachable() (__assume(false))
+#endif
+
+#endif
+
+#ifndef CAMLunreachable
+#define CAMLunreachable() ((void) 0)
 #endif
 
 #ifdef DEBUG
