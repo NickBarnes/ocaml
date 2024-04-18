@@ -45,7 +45,7 @@ _Atomic caml_timing_hook caml_minor_gc_end_hook = (caml_timing_hook)NULL;
 _Atomic caml_timing_hook caml_finalise_begin_hook = (caml_timing_hook)NULL;
 _Atomic caml_timing_hook caml_finalise_end_hook = (caml_timing_hook)NULL;
 
-#ifdef DEBUG
+#if defined (DEBUG) || !defined(CAML_NO_CHECK)
 
 void caml_failed_assert (char * expr, char_os * file_os, int line)
 {
