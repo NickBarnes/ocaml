@@ -65,10 +65,11 @@ type (!'a, !'b) t
 val create : ?random: (* thwart tools/sync_stdlib_docs *) bool ->
              int -> ('a, 'b) t
 (** [Hashtbl.create n] creates a new, empty hash table, with
-   initial size [n].  For best results, [n] should be on the
-   order of the expected number of elements that will be in
-   the table.  The table grows as needed, so [n] is just an
-   initial guess.
+   suggested initial size [n].  For best results, [n] should be on the
+   order of the expected number of elements that will be in the table.
+   The table grows as needed, so [n] is just an initial guess. If [n]
+   is very small or negative then it is disregarded and a small
+   default size is used.
 
    The optional [~random] parameter (a boolean) controls whether
    the internal organization of the hash table is randomized at each
