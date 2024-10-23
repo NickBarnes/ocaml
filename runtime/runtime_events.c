@@ -77,10 +77,10 @@ On disk structure:
 ----------------------------------------------------------------
 | File header (version, offsets, etc..)                        |
 ----------------------------------------------------------------
-| Ring 0..caml_params->max_domains metadata                     |
+| Ring 0..caml_params->max_domains metadata                    |
 | (head and tail indexes, one per cache line)                  |
 ----------------------------------------------------------------
-| Ring 0..caml_params->max_domains data                         |
+| Ring 0..caml_params->max_domains data                        |
 | (actual ring data, default 2^16 words = 512k bytes)          |
 ----------------------------------------------------------------
 | Custom event IDs                                             |
@@ -580,10 +580,9 @@ static void write_to_ring(ev_category category, ev_message_type type,
 
   if (padding_required > 0) {
     ring_ptr[ring_tail_offset] =
-        (ring_distance_to_end
-         << 54); /* Padding header with size ring_distance_to_end
-                    Readers will skip the message and go straight
-                    to the beginning of the ring. */
+        RUNTIME_EVENTS_HEADER(ring_distance_to_end, 0, 0, 0);
+    /* Padding header with size ring_distance_to_end. Readers will skip the
+       message and go straight to the beginning of the ring. */
 
     ring_tail += ring_distance_to_end;
 

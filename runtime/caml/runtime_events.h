@@ -264,25 +264,61 @@ struct runtime_events_metadata_header {
    + RUNTIME_EVENTS_NUM_ALLOC_BUCKETS_DECADE \
    + 1)
 
-/* event header fields (for runtime events):
+/* Event header:
+
 - length (10 bits)
 - runtime or user event (1 bit)
 - event type (4 bits)
 - event id (13 bits)
+
+     +----------+------+-------+-----+--------+
+     | jength   | user |  type |  id | unused |
+     +----------+------+-------+-----+--------+
+bits  63      54   53   52   49 48 36 35     0
+
 */
 
+typedef uint64_t runtime_event_header;
+
+#define RUNTIME_EVENTS_HEADER_LENGTH_BITS 10
+#define RUNTIME_EVENTS_HEADER_LENGTH_SHIFT \
+  (sizeof(runtime_event_header)*CHAR_BIT - RUNTIME_EVENTS_HEADER_LENGTH_BITS)
+#define RUNTIME_EVENTS_HEADER_LENGTH_MASK \
+  ((1ull << RUNTIME_EVENTS_HEADER_LENGTH_BITS) - 1)
 #define RUNTIME_EVENTS_ITEM_LENGTH(header) \
-        (((header) >> 54) & ((1UL << 10) - 1))
-#define RUNTIME_EVENTS_ITEM_IS_RUNTIME(header) !((header) & (1ULL << 53))
-#define RUNTIME_EVENTS_ITEM_IS_USER(header) ((header) & (1ULL << 53))
-#define RUNTIME_EVENTS_ITEM_TYPE(header) (((header) >> 49) & ((1UL << 4) - 1))
-#define RUNTIME_EVENTS_ITEM_ID(header) (((header) >> 36) & ((1UL << 13) - 1))
+  (((header) >> RUNTIME_EVENTS_HEADER_LENGTH_SHIFT) \
+   & RUNTIME_EVENTS_HEADER_LENGTH_MASK)
+
+#define RUNTIME_EVENTS_HEADER_USER_SHIFT \
+  (RUNTIME_EVENTS_HEADER_LENGTH_SHIFT - 1)
+#define RUNTIME_EVENTS_ITEM_IS_RUNTIME(header) \
+  !((header) & (1ULL << RUNTIME_EVENTS_HEADER_USER_SHIFT))
+#define RUNTIME_EVENTS_ITEM_IS_USER(header) \
+  !RUNTIME_EVENTS_ITEM_IS_RUNTIME(header)
+
+#define RUNTIME_EVENTS_HEADER_TYPE_BITS 4
+#define RUNTIME_EVENTS_HEADER_TYPE_SHIFT \
+  (RUNTIME_EVENTS_HEADER_USER_SHIFT - RUNTIME_EVENTS_HEADER_TYPE_BITS)
+#define RUNTIME_EVENTS_HEADER_TYPE_MASK \
+ ((1ull << RUNTIME_EVENTS_HEADER_TYPE_BITS) - 1)
+#define RUNTIME_EVENTS_ITEM_TYPE(header) \
+  (((header) >> RUNTIME_EVENTS_HEADER_TYPE_SHIFT) \
+   & RUNTIME_EVENTS_HEADER_TYPE_MASK)
+
+#define RUNTIME_EVENTS_HEADER_ID_BITS 13
+#define RUNTIME_EVENTS_HEADER_ID_SHIFT \
+  (RUNTIME_EVENTS_HEADER_TYPE_SHIFT - RUNTIME_EVENTS_HEADER_ID_BITS)
+#define RUNTIME_EVENTS_HEADER_ID_MASK \
+ ((1ull << RUNTIME_EVENTS_HEADER_ID_BITS) - 1)
+#define RUNTIME_EVENTS_ITEM_ID(header) \
+  (((header) >> RUNTIME_EVENTS_HEADER_ID_SHIFT) \
+   & RUNTIME_EVENTS_HEADER_ID_MASK)
 
 #define RUNTIME_EVENTS_HEADER(length, is_runtime, type, event_id) \
-         (((uint64_t)(length)) << 54) | \
-         ((is_runtime) ? 0 : (1ULL << 53)) | \
-         ((uint64_t)(type)) << 49 | \
-         ((uint64_t)(event_id)) << 36;
+         (((uint64_t)(length)) << RUNTIME_EVENTS_HEADER_LENGTH_SHIFT) | \
+         ((is_runtime) ? 0 : (1ULL << RUNTIME_EVENTS_HEADER_USER_SHIFT)) | \
+         ((uint64_t)(type)) << RUNTIME_EVENTS_HEADER_TYPE_SHIFT | \
+         ((uint64_t)(event_id)) << RUNTIME_EVENTS_HEADER_ID_SHIFT;
 
 /* Set up runtime_events (and check if we need to start it immediately).
    Called from startup* */
