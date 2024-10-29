@@ -58,6 +58,10 @@ Working version
   (Stephen Dolan, report by Timothy Bourke, review by Mark Shinwell and Damien
   Doligez)
 
+- #13580: Introduce sweep-only phase at start of major GC cycle,
+  to reduce latent-garbage delay and therefore improve GC performance.
+  (Stephen Dolan and Nick Barnes, review by KC Sivaramakrishnan)
+
 ### Code generation and optimizations:
 
 - #13565: less tagging in switches compiled to affine transformations
