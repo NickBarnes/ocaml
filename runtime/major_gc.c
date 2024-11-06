@@ -93,7 +93,7 @@ uintnat caml_major_cycles_completed = 0;
 
    Terminating domains terminate after sweeping is complete for their domain.
    */
-static atomic_uintnat num_domains_to_sweep;
+static atomic_counter num_domains_to_sweep;
 
 /* [num_domains_to_mark] records the number of domains to mark in the current
    major cycle. The number is set to the [num_domains_in_stw] at the start of
@@ -104,11 +104,11 @@ static atomic_uintnat num_domains_to_sweep;
    into a potentially empty mark stack of the newly spawned domain.
 
    Terminating domains empty their mark stack before terminating. */
-static atomic_uintnat num_domains_to_mark;
+static atomic_counter num_domains_to_mark;
 
 /* [num_domains_to_ephe_sweep] is set to the [participating_count] at the start
    of the [Phase_sweep_ephe] and strictly decreases. */
-static atomic_uintnat num_domains_to_ephe_sweep;
+static atomic_counter num_domains_to_ephe_sweep;
 
 /* [num_domains_to_final_update_first] and [num_domains_to_final_update_last]
    are initialised to [num_domains_in_stw] at the start of the cycle. Whenever
@@ -118,8 +118,8 @@ static atomic_uintnat num_domains_to_ephe_sweep;
    Newly created domains increment both the counters. Terminating domain
    orphans its finalisers and then decrements the counters. See
    [caml_final_domain_terminate]. */
-static atomic_uintnat num_domains_to_final_update_first;
-static atomic_uintnat num_domains_to_final_update_last;
+static atomic_counter num_domains_to_final_update_first;
+static atomic_counter num_domains_to_final_update_last;
 
 /* When domains terminate, they will orphan their finalisers. As mentioned in
    the comment attached to [num_domains_to_final_update_*] counters, a domain
@@ -136,7 +136,8 @@ static atomic_uintnat num_domains_to_final_update_last;
    in [Phase_sweep_and_mark_main] so that the orphaned finalisers can be
    adopted before moving onto [Phase_mark_final] where the [GC.finalise]
    (finalise first) finalisers are processed. */
-static atomic_uintnat num_domains_orphaning_finalisers = 0;
+static atomic_counter num_domains_orphaning_finalisers =
+  CAML_ATOMIC_COUNTER_STATIC_INITIALIZER(0);
 
 /* These two counters keep track of how much work the GC is supposed to
    do in order to keep up with allocation. Both are in GC work units.
@@ -196,13 +197,13 @@ Caml_inline char caml_gc_phase_char(int may_access_gc_phase) {
 extern value caml_ephe_none; /* See weak.c */
 
 static struct ephe_cycle_info_t {
-  atomic_uintnat num_domains_todo;
+  atomic_counter num_domains_todo;
   /* Number of domains that need to scan their ephemerons in the current major
    * GC cycle. This field is decremented when ephe_info->todo list at a domain
    * becomes empty.  */
-  atomic_uintnat ephe_cycle;
+  atomic_counter ephe_cycle;
   /* Ephemeron cycle count */
-  atomic_uintnat num_domains_done;
+  atomic_counter num_domains_done;
   /* Number of domains that have marked their ephemerons in the current
    * ephemeron cycle. */
 } ephe_cycle_info;

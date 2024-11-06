@@ -42,6 +42,10 @@ using std::memory_order_seq_cst;
 typedef _Atomic uintnat atomic_uintnat;
 typedef _Atomic intnat atomic_intnat;
 
+typedef struct {
+  atomic_uintnat v;
+} atomic_counter;
+
 #endif
 
 #ifdef CAML_INTERNALS
@@ -59,24 +63,26 @@ typedef _Atomic intnat atomic_intnat;
 
 /* Atomic counters, abstracted here for use across the runtime. */
 
-Caml_inline void caml_atomic_counter_init(atomic_uintnat* counter, uintnat n)
+#define CAML_ATOMIC_COUNTER_STATIC_INITIALIZER(n) {n}
+
+Caml_inline void caml_atomic_counter_init(atomic_counter* counter, uintnat n)
 {
-  atomic_store_release(counter, n);
+  atomic_store_release(&counter->v, n);
 }
 
 /* Atomically get the current value of an atomic uintnat counter */
 
-Caml_inline uintnat caml_atomic_counter_value(atomic_uintnat* counter)
+Caml_inline uintnat caml_atomic_counter_value(atomic_counter* counter)
 {
-  return atomic_load_acquire(counter);
+  return atomic_load_acquire(&counter->v);
 }
 
 /* Decrement an atomic uintnat counter. Assertion check for
  * underflow. Returns the new value. */
 
-Caml_inline uintnat caml_atomic_counter_decr(atomic_uintnat* counter)
+Caml_inline uintnat caml_atomic_counter_decr(atomic_counter* counter)
 {
-  uintnat old = atomic_fetch_sub(counter, 1);
+  uintnat old = atomic_fetch_sub(&counter->v, 1);
   CAMLassert (old > 0);
   return old-1;
 }
@@ -84,9 +90,9 @@ Caml_inline uintnat caml_atomic_counter_decr(atomic_uintnat* counter)
 /* Increment an atomic uintnat counter. Assertion check for
  * overflow. Returns the new value. */
 
-Caml_inline uintnat caml_atomic_counter_incr(atomic_uintnat* counter)
+Caml_inline uintnat caml_atomic_counter_incr(atomic_counter* counter)
 {
-  uintnat old = atomic_fetch_add(counter, 1);
+  uintnat old = atomic_fetch_add(&counter->v, 1);
   CAMLassert (old+1 != 0);
   return old+1;
 }
