@@ -48,10 +48,10 @@ struct caml_ephe_info {
      exactly once per major cycle per domain. This field keeps track of whether
      this move has been done for the current cycle. */
 
-  uintnat cycle;
+  uintnat round;
   struct {
     value* todop;
-    uintnat cycle;
+    uintnat round;
   } cursor;
 };
 
