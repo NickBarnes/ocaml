@@ -1424,7 +1424,7 @@ void caml_mark_roots_stw (int participant_count,
 
   CAML_GC_MESSAGE(MINOR, "[%05ld:%c:%02d] caml_mark_roots_stw\n",
                   caml_major_cycles_completed, caml_gc_phase_char(1),
-                  domain->id);
+                  Caml_state->id);
   static atomic_uintnat global_roots_status;
   /* The above atomic has one of the following values */
   enum {
