@@ -995,8 +995,13 @@ void caml_set_pacing_params (caml_gc_pacing_params p)
   pp_c1[pp_mark] = s1 / pp_sigma;
   pp_c1[pp_ephe] = 2 * s1 / pp_gamma;
   double s2 = pp_sigma + 1;
-  pp_c2[pp_sweep] = s2;
-  pp_c2[pp_mark] = s2 / pp_sigma;
+  /* Experimental fix: ephemeron allocations must not add sweep/mark
+     work beyond their on-heap accounting, otherwise the effective
+     sweep rate exceeds the design constraint (eq. 74 in the design
+     doc) and the heap converges below the target overhead. s2 is
+     still used (via gamma) to pace the Ephe_sweep phase. */
+  pp_c2[pp_sweep] = 0;
+  pp_c2[pp_mark] = 0;
   pp_c2[pp_ephe] = 2 * s2 / pp_gamma;
   caml_plat_unlock (&pp_lock);
   caml_gc_log("set GC pacing params: %"CAML_PRIuNAT" percent_free; %"
